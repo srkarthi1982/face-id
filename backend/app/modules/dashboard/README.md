@@ -69,6 +69,8 @@ person-row ID is selected. The runtime analytics API does not query
 Analytics queries aggregate in Luna SQL before returning results to the
 application: overview is constant-sized, trend returns at most one totals row
 per exact report date, and ranking returns at most the requested limit. The
+employee counts for all non-daily trend periods are fetched in one parameterized
+cross-dialect statement, rather than one query per period. The
 internal employee identity is the full tuple `(org_id, identity source,
 normalized identity value)`, preferring a trimmed `person_id` and falling back
 to a trimmed `person_no`. Therefore the displayed `employee_key` is not globally

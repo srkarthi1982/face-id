@@ -3,7 +3,7 @@
 from datetime import date
 from typing import Any
 
-from sqlalchemy import Select, and_, case, distinct, func, literal, select
+from sqlalchemy import Select, and_, case, distinct, func, literal, select, union_all
 
 from .constants import ACTIVE_DEL_STATUS
 from .db import _execute_luna_select
@@ -133,9 +133,40 @@ def get_trend_date_aggregates(start_date: date, end_date: date, org_id: str | No
     return totals
 
 
-def get_scoped_employee_count(start_date: date, end_date: date, org_id: str | None = None) -> int:
-    row = _execute_luna_select(scoped_identity_count_statement(start_date, end_date, org_id))[0]
-    return int(row["employee_count"])
+def trend_period_identity_counts_statement(
+    periods: list[tuple[str, date, date]], org_id: str | None = None
+):
+    """Build one portable statement yielding one scoped identity count per period."""
+    period_selects = []
+    for index, (period_key, period_start, period_end) in enumerate(periods):
+        _person_id, _person_no, source, value = _normalized_identity_columns()
+        identities = (
+            select(
+                saas_ca_report_daily.c.org_id,
+                source.label("identity_source"),
+                value.label("identity_value"),
+            )
+            .where(*_daily_predicates(period_start, period_end, org_id), value.is_not(None))
+            .group_by(saas_ca_report_daily.c.org_id, source, value)
+            .subquery(f"period_identities_{index}")
+        )
+        period_selects.append(
+            select(
+                literal(period_key).label("period_key"),
+                func.count().label("employee_count"),
+            ).select_from(identities)
+        )
+    if not period_selects:
+        raise ValueError("At least one trend period is required")
+    combined = union_all(*period_selects).subquery("all_period_employee_counts")
+    return select(combined.c.period_key, combined.c.employee_count)
+
+
+def get_trend_period_employee_counts(
+    periods: list[tuple[str, date, date]], org_id: str | None = None
+) -> dict[str, int]:
+    rows = _execute_luna_select(trend_period_identity_counts_statement(periods, org_id))
+    return {row["period_key"]: int(row["employee_count"]) for row in rows}
 
 
 def ranking_statement(

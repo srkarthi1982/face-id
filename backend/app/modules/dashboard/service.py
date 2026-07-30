@@ -130,6 +130,20 @@ def get_trend(start_date, end_date, org_id, granularity, max_days: int) -> Dashb
             {"rows": [], "start": max(period_start, resolved.start), "end": min(period_end, resolved.end)},
         )
         bucket["rows"].append(row)
+    if granularity == DashboardTrendGranularity.DAY:
+        employee_counts = {
+            key: int(bucket["rows"][0]["employee_count"])
+            for key, bucket in buckets.items()
+        }
+    else:
+        descriptors = [
+            (key, bucket["start"], bucket["end"])
+            for key, bucket in sorted(buckets.items(), key=lambda item: item[1]["start"])
+        ]
+        employee_counts = (
+            repository.get_trend_period_employee_counts(descriptors, org_id)
+            if descriptors else {}
+        )
     points = []
     for key, bucket in sorted(buckets.items(), key=lambda item: item[1]["start"]):
         period_rows = bucket["rows"]
@@ -137,12 +151,8 @@ def get_trend(start_date, end_date, org_id, granularity, max_days: int) -> Dashb
             period_key=key,
             period_start=bucket["start"],
             period_end=bucket["end"],
-            report_row_count=len(period_rows),
-            employee_count=(
-                int(period_rows[0]["employee_count"])
-                if granularity == DashboardTrendGranularity.DAY
-                else repository.get_scoped_employee_count(bucket["start"], bucket["end"], org_id)
-            ),
+            report_row_count=sum(int(row["report_row_count"] or 0) for row in period_rows),
+            employee_count=employee_counts.get(key, 0),
             **_aggregate_totals(period_rows),
         ))
     return DashboardTrend(

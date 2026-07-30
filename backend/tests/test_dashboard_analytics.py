@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -72,8 +72,11 @@ def _stub_range(monkeypatch, rows, latest=date(2026, 1, 31), exceptions=0):
                  "employee_count": len({value for r in day_rows if (value := identity(r))}), **totals(day_rows)}
                 for day in sorted({r["report_date"] for r in selected})
                 if (day_rows := [r for r in selected if r["report_date"] == day])]
-    def employee_count(start, end, org_id=None):
-        return len({value for r in in_range(start, end, org_id) if (value := identity(r))})
+    def period_counts(periods, org_id=None):
+        return {
+            key: len({value for r in in_range(start, end, org_id) if (value := identity(r))})
+            for key, start, end in periods
+        }
     def ranking(start, end, org_id, limit):
         selected = in_range(start, end, org_id)
         groups = {}
@@ -92,7 +95,7 @@ def _stub_range(monkeypatch, rows, latest=date(2026, 1, 31), exceptions=0):
         return result[:limit]
     monkeypatch.setattr(repository, "get_overview_aggregate", overview)
     monkeypatch.setattr(repository, "get_trend_date_aggregates", trend)
-    monkeypatch.setattr(repository, "get_scoped_employee_count", employee_count)
+    monkeypatch.setattr(repository, "get_trend_period_employee_counts", period_counts)
     monkeypatch.setattr(repository, "get_ranking_aggregates", ranking)
     monkeypatch.setattr(repository, "count_exceptions", lambda *args: exceptions)
 
@@ -132,6 +135,8 @@ def test_runtime_analytics_modules_have_no_primary_session_or_writes():
         (repository.scoped_identity_count_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
         (repository.trend_dates_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
         (repository.trend_date_identity_counts_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
+        (repository.trend_period_identity_counts_statement,
+         ([("2025-W01", date(2024, 12, 30), date(2025, 1, 5)), ("2025-W02", date(2025, 1, 6), date(2025, 1, 12))], "ORG")),
         (repository.ranking_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG", 10)),
         (repository.exception_count_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
         (repository.exceptions_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG", 1, 20)),
@@ -188,6 +193,65 @@ def test_trend_grouping_and_clipping(monkeypatch, granularity):
     if granularity == DashboardTrendGranularity.WEEK:
         assert result.points[0].period_key == "2020-W53"
         assert result.points[0].actual_seconds == 300
+
+
+@pytest.mark.parametrize("granularity", list(DashboardTrendGranularity))
+def test_trend_report_counts_sum_underlying_rows(monkeypatch, granularity):
+    rows = [
+        _daily(date(2025, 1, 2), "P1", "001", 10),
+        _daily(date(2025, 1, 2), "P2", "002", 20),
+        _daily(date(2025, 1, 2), "P3", "003", 30),
+        _daily(date(2025, 1, 3), "P1", "001", 40),
+    ]
+    _stub_range(monkeypatch, rows, latest=date(2025, 1, 3))
+    result = service.get_trend(
+        date(2025, 1, 2), date(2025, 1, 3), "ORG", granularity,
+        TREND_MAX_DAYS[granularity.value],
+    )
+    if granularity == DashboardTrendGranularity.DAY:
+        assert [point.report_row_count for point in result.points] == [3, 1]
+        assert [point.employee_count for point in result.points] == [3, 1]
+    else:
+        assert len(result.points) == 1
+        assert result.points[0].report_row_count == 4
+        assert result.points[0].employee_count == 3
+
+
+@pytest.mark.parametrize(
+    "granularity,days",
+    [
+        (DashboardTrendGranularity.DAY, 300),
+        (DashboardTrendGranularity.WEEK, 1000),
+        (DashboardTrendGranularity.MONTH, 3000),
+        (DashboardTrendGranularity.YEAR, 3000),
+    ],
+)
+def test_trend_period_count_repository_calls_are_bounded(monkeypatch, granularity, days):
+    start = date(2018, 1, 1)
+    end = start + timedelta(days=days - 1)
+    date_rows = [
+        {"report_date": start + timedelta(days=offset), "report_row_count": 2,
+         "employee_count": 1, "scheduled_seconds": 2, "actual_seconds": 2,
+         "normal_seconds": 2, "overtime_seconds": 0, "late_seconds": 0,
+         "early_seconds": 0, "absent_seconds": 0}
+        for offset in range(days)
+    ]
+    calls = {"latest": 0, "dates": 0, "periods": 0}
+    def latest(org_id=None):
+        calls["latest"] += 1
+        return end
+    def dates(*args):
+        calls["dates"] += 1
+        return date_rows
+    def periods(descriptors, org_id=None):
+        calls["periods"] += 1
+        return {key: 1 for key, _start, _end in descriptors}
+    monkeypatch.setattr(repository, "get_latest_report_date", latest)
+    monkeypatch.setattr(repository, "get_trend_date_aggregates", dates)
+    monkeypatch.setattr(repository, "get_trend_period_employee_counts", periods)
+    result = service.get_trend(start, end, None, granularity, TREND_MAX_DAYS[granularity.value])
+    assert result.points
+    assert calls == {"latest": 1, "dates": 1, "periods": 0 if granularity.value == "day" else 1}
 
 
 def test_ranking_identity_fallback_ties_and_limit(monkeypatch):
@@ -290,6 +354,9 @@ def test_bounded_aggregates_and_namespace_safe_identity(monkeypatch):
     try:
         overview = repository.get_overview_aggregate(date(2026, 1, 1), date(2026, 1, 2))
         trend = repository.get_trend_date_aggregates(date(2026, 1, 1), date(2026, 1, 2))
+        period_counts = repository.get_trend_period_employee_counts(
+            [("all", date(2026, 1, 1), date(2026, 1, 2))]
+        )
         ranking = list(repository.get_ranking_aggregates(date(2026, 1, 1), date(2026, 1, 2), None, 3))
         assert overview["report_row_count"] == 7
         assert overview["report_day_count"] == 2
@@ -299,6 +366,7 @@ def test_bounded_aggregates_and_namespace_safe_identity(monkeypatch):
         assert len(trend) == 2
         assert [row["report_row_count"] for row in trend] == [6, 1]
         assert [row["employee_count"] for row in trend] == [5, 1]
+        assert period_counts == {"all": 5}
         assert sum(row["actual_seconds"] for row in trend) == 280
         assert len(ranking) == 3
         assert all(row["org_id"] is not None for row in ranking)
