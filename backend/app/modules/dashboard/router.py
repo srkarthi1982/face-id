@@ -20,6 +20,7 @@ from .db import LunaConfigurationError, LunaUnavailableError
 from .schemas import (
     AttendanceExceptionItem,
     DashboardOverview,
+    DashboardOrganizationOption,
     DashboardTrend,
     DashboardTrendGranularity,
     EmployeeWorkHoursRanking,
@@ -43,6 +44,11 @@ def _safe_call(function, *args, **kwargs):
 
 
 DashboardRangeError = service.DashboardRangeError
+
+
+@router.get("/organizations", response_model=SuccessResponse[list[DashboardOrganizationOption]])
+def organizations():
+    return ok(_safe_call(service.get_organizations))
 
 
 @router.get("/overview", response_model=SuccessResponse[DashboardOverview])

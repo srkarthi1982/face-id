@@ -16,12 +16,17 @@ from .schemas import (
     AttendanceExceptionItem,
     DashboardDataStatus,
     DashboardOverview,
+    DashboardOrganizationOption,
     DashboardTrend,
     DashboardTrendGranularity,
     DashboardTrendPoint,
     EmployeeWorkHoursRanking,
     EmployeeWorkHoursRankingItem,
 )
+
+
+def get_organizations() -> list[DashboardOrganizationOption]:
+    return [DashboardOrganizationOption(org_id=row["org_id"]) for row in repository.get_organizations()]
 
 
 class DashboardRangeError(ValueError):
@@ -47,18 +52,29 @@ _DURATION_COLUMNS = {
 }
 
 
+def _normalize_requested_org(org_id: str | None) -> str | None:
+    if org_id is None:
+        return None
+    normalized = org_id.strip()
+    return normalized or None
+
+
 def resolve_range(
     start_date: date | None, end_date: date | None, org_id: str | None, max_days: int
 ) -> EffectiveRange:
+    org_id = _normalize_requested_org(org_id)
     if start_date is not None and end_date is not None:
         if start_date > end_date:
             raise DashboardRangeError("start_date must not be after end_date")
         if (end_date - start_date).days + 1 > max_days:
             raise DashboardRangeError(f"Date range exceeds the {max_days}-day limit")
     latest = repository.get_latest_report_date(org_id)
-    if latest is None:
+    if end_date is not None:
+        effective_end = end_date
+    elif latest is not None:
+        effective_end = latest
+    else:
         return EffectiveRange(None, None, None, org_id)
-    effective_end = end_date or latest
     effective_start = start_date or (effective_end - timedelta(days=DEFAULT_RANGE_DAYS - 1))
     if effective_start > effective_end:
         raise DashboardRangeError("start_date must not be after end_date")
@@ -87,13 +103,17 @@ def _range_fields(value: EffectiveRange) -> dict[str, Any]:
 def get_overview(start_date, end_date, org_id, max_days: int) -> DashboardOverview:
     resolved = resolve_range(start_date, end_date, org_id, max_days)
     aggregate = None if resolved.start is None else repository.get_overview_aggregate(
-        resolved.start, resolved.end, org_id
+        resolved.start, resolved.end, resolved.org_id
     )
-    exception_count = 0 if resolved.start is None else repository.count_exceptions(resolved.start, resolved.end, org_id)
+    exception_count = 0 if resolved.start is None else repository.count_exceptions(resolved.start, resolved.end, resolved.org_id)
     report_row_count = int(aggregate["report_row_count"]) if aggregate else 0
     return DashboardOverview(
         **_range_fields(resolved),
-        data_status=DashboardDataStatus.AVAILABLE if report_row_count else DashboardDataStatus.EMPTY,
+        data_status=(
+            DashboardDataStatus.AVAILABLE
+            if report_row_count or exception_count
+            else DashboardDataStatus.EMPTY
+        ),
         duration_unit=DURATION_UNIT,
         report_row_count=report_row_count,
         report_day_count=int(aggregate["report_day_count"]) if aggregate else 0,
@@ -120,7 +140,7 @@ def _period_bounds(day: date, granularity: DashboardTrendGranularity) -> tuple[s
 def get_trend(start_date, end_date, org_id, granularity, max_days: int) -> DashboardTrend:
     resolved = resolve_range(start_date, end_date, org_id, max_days)
     rows = [] if resolved.start is None else list(
-        repository.get_trend_date_aggregates(resolved.start, resolved.end, org_id)
+        repository.get_trend_date_aggregates(resolved.start, resolved.end, resolved.org_id)
     )
     buckets: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -141,7 +161,7 @@ def get_trend(start_date, end_date, org_id, granularity, max_days: int) -> Dashb
             for key, bucket in sorted(buckets.items(), key=lambda item: item[1]["start"])
         ]
         employee_counts = (
-            repository.get_trend_period_employee_counts(descriptors, org_id)
+            repository.get_trend_period_employee_counts(descriptors, resolved.org_id)
             if descriptors else {}
         )
     points = []
@@ -167,7 +187,7 @@ def get_trend(start_date, end_date, org_id, granularity, max_days: int) -> Dashb
 def get_ranking(start_date, end_date, org_id, limit: int, max_days: int) -> EmployeeWorkHoursRanking:
     resolved = resolve_range(start_date, end_date, org_id, max_days)
     rows = [] if resolved.start is None else list(
-        repository.get_ranking_aggregates(resolved.start, resolved.end, org_id, limit)
+        repository.get_ranking_aggregates(resolved.start, resolved.end, resolved.org_id, limit)
     )
     items = []
     for index, row in enumerate(rows, 1):
@@ -186,7 +206,7 @@ def get_attendance_exceptions(start_date, end_date, org_id, page: int, page_size
     resolved = resolve_range(start_date, end_date, org_id, max_days)
     if resolved.start is None:
         return [], Meta(page=page, page_size=page_size, total=0, pages=0)
-    total = repository.count_exceptions(resolved.start, resolved.end, org_id)
-    rows = repository.get_exceptions(resolved.start, resolved.end, org_id, page, page_size)
+    total = repository.count_exceptions(resolved.start, resolved.end, resolved.org_id)
+    rows = repository.get_exceptions(resolved.start, resolved.end, resolved.org_id, page, page_size)
     items = [AttendanceExceptionItem.model_validate(row) for row in rows]
     return items, Meta(page=page, page_size=page_size, total=total, pages=ceil(total / page_size) if total else 0)

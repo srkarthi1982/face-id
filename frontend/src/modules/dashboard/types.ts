@@ -1,6 +1,7 @@
 import type {
   AttendanceExceptionItem,
   DashboardOverview,
+  DashboardOrganizationOption,
   DashboardTrend,
   DashboardTrendGranularity,
   EmployeeWorkHoursRanking,
@@ -24,3 +25,4 @@ export type PanelState<T> = { status: PanelStatus; data: T | null }
 export type ExceptionResult = { items: AttendanceExceptionItem[]; meta: Meta }
 
 export type { DashboardOverview, DashboardTrend, EmployeeWorkHoursRanking }
+export type { DashboardOrganizationOption }

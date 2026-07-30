@@ -9,13 +9,14 @@ import DashboardPanelState from './components/DashboardPanelState'
 import DashboardKpiGrid from './components/DashboardKpiGrid'
 import WorkHoursTrendChart from './components/WorkHoursTrendChart'
 import EmployeeRankingTable from './components/EmployeeRankingTable'
+import DashboardRankingHeader from './components/DashboardRankingHeader'
 import AttendanceExceptionsTable from './components/AttendanceExceptionsTable'
 import { formatDate } from './utils'
 
 export default function DashboardPage() {
   const { t, lang } = useI18n()
-  const { overview, trend, ranking, exceptions, loadAll, refresh, retry, dispose } = useDashboardStore(useShallow((s)=>({overview:s.overview,trend:s.trend,ranking:s.ranking,exceptions:s.exceptions,loadAll:s.loadAll,refresh:s.refresh,retry:s.retry,dispose:s.dispose})))
-  useEffect(()=>{void loadAll();return dispose},[loadAll,dispose])
+  const { overview, trend, ranking, exceptions, initialize, refresh, retry, dispose } = useDashboardStore(useShallow((s)=>({overview:s.overview,trend:s.trend,ranking:s.ranking,exceptions:s.exceptions,initialize:s.initialize,refresh:s.refresh,retry:s.retry,dispose:s.dispose})))
+  useEffect(()=>{void initialize();return dispose},[initialize,dispose])
   const dates=overview.data
 
   return (
@@ -24,7 +25,7 @@ export default function DashboardPage() {
       <DashboardFilters />
       <DashboardPanelState status={overview.status} onRetry={()=>void retry('overview')}>{overview.data&&<DashboardKpiGrid data={overview.data}/>}</DashboardPanelState>
       <section className="rounded-xl border border-bd bg-surface p-4 shadow-sm"><h2 className="mb-4 text-lg font-semibold">{t('nav.dashboard.chart.title')}</h2><DashboardPanelState status={trend.status} onRetry={()=>void retry('trend')}>{trend.data&&<WorkHoursTrendChart data={trend.data}/>}</DashboardPanelState></section>
-      <section className="rounded-xl border border-bd bg-surface p-4 shadow-sm"><h2 className="mb-4 text-lg font-semibold">{t('nav.dashboard.ranking.title')}</h2><DashboardPanelState status={ranking.status} onRetry={()=>void retry('ranking')}>{ranking.data&&<EmployeeRankingTable data={ranking.data}/>}</DashboardPanelState></section>
+      <section className="rounded-xl border border-bd bg-surface p-4 shadow-sm"><DashboardRankingHeader /><DashboardPanelState status={ranking.status} onRetry={()=>void retry('ranking')}>{ranking.data&&<EmployeeRankingTable data={ranking.data}/>}</DashboardPanelState></section>
       <section className="rounded-xl border border-bd bg-surface p-4 shadow-sm"><h2 className="mb-4 text-lg font-semibold">{t('nav.dashboard.exceptions.title')}</h2><DashboardPanelState status={exceptions.status} onRetry={()=>void retry('exceptions')}>{exceptions.data&&<AttendanceExceptionsTable data={exceptions.data}/>}</DashboardPanelState></section>
     </div>
   )

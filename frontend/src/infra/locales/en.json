@@ -161,7 +161,7 @@
       "effectiveRange": "Effective range",
       "latestSource": "Latest report",
       "actions": { "apply": "Apply filters", "reset": "Reset", "refresh": "Refresh", "retry": "Retry", "previous": "Previous", "next": "Next" },
-        "filters": { "title": "Dashboard filters", "start": "Start date", "end": "End date", "organization": "Organization" },
+        "filters": { "title": "Dashboard filters", "start": "Start date", "end": "End date", "organization": "Organization", "allOrganizations": "ALL", "organizationsLoading": "Loading organizations…", "organizationsUnavailable": "Organization options are unavailable; the current selection is preserved." },
         "validation": { "dateRange": "Start date must be on or before end date." },
       "states": { "loading": "Loading attendance analytics", "empty": "No attendance analytics match these filters.", "unavailable": "Attendance analytics are temporarily unavailable.", "error": "This dashboard section could not be loaded." },
       "units": { "day": "d", "hour": "h", "minute": "min", "zero": "0 min" },

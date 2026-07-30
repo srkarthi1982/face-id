@@ -53,6 +53,8 @@ All routes are under `/api/v1/dashboard` and require exactly
 
 - `GET /overview` returns source status, effective dates, row/day/employee
   counts, reported-exception count, and official duration totals.
+- `GET /organizations` returns sorted, distinct active Luna organization IDs
+  represented in daily reports, exception reports, or person records.
 - `GET /work-hours/trend` returns day, ISO-week, calendar-month, or
   calendar-year duration buckets.
 - `GET /work-hours/ranking` ranks employees by official actual seconds.
@@ -65,6 +67,21 @@ integer seconds. Reported exception counts and records come only from
 deterministic exception enrichment; when duplicates exist, the lowest active
 person-row ID is selected. The runtime analytics API does not query
 `dbo.saas_ca_clock_record`.
+
+Organization options are read-only IDs because the supplied Luna contract has
+no organization-name table. A trimmed ID is the canonical organization
+identity; null, empty, and whitespace-only IDs mean no organization. Every
+filter, grouping, response, and exception-person join uses that rule without
+case-folding. The options query excludes blanks and deleted rows, deduplicates
+each of the three approved sources before one bounded union, then globally
+deduplicates and sorts the result. Selecting `ALL` in the frontend means no
+`org_id` query parameter.
+
+An explicit end date controls the effective range even when an organization has
+no daily reports, allowing exception-only organizations to return exception
+data. The daily-report latest date remains nullable response metadata in that
+case. Without an explicit end date, a scoped daily latest date is still required
+to derive the range.
 
 Analytics queries aggregate in Luna SQL before returning results to the
 application: overview is constant-sized, trend returns at most one totals row

@@ -2,22 +2,24 @@ import '../../api/client'
 import { create } from 'zustand'
 import {
   attendanceExceptionsApiV1DashboardAttendanceExceptionsGet as fetchExceptions,
+  organizationsApiV1DashboardOrganizationsGet as fetchOrganizations,
   overviewApiV1DashboardOverviewGet as fetchOverview,
   workHoursRankingApiV1DashboardWorkHoursRankingGet as fetchRanking,
   workHoursTrendApiV1DashboardWorkHoursTrendGet as fetchTrend,
 } from '../../api/generated'
-import type { SuccessResponseDashboardOverview, SuccessResponseDashboardTrend, SuccessResponseEmployeeWorkHoursRanking, SuccessResponseListAttendanceExceptionItem } from '../../api/generated'
-import type { DashboardFilters, DashboardOverview, DashboardTrend, EmployeeWorkHoursRanking, ExceptionResult, PanelState } from './types'
+import type { SuccessResponseDashboardOverview, SuccessResponseDashboardTrend, SuccessResponseEmployeeWorkHoursRanking, SuccessResponseListAttendanceExceptionItem, SuccessResponseListDashboardOrganizationOption } from '../../api/generated'
+import type { DashboardFilters, DashboardOrganizationOption, DashboardOverview, DashboardTrend, EmployeeWorkHoursRanking, ExceptionResult, PanelState } from './types'
 
-type Section = 'overview' | 'trend' | 'ranking' | 'exceptions'
+type Section = 'organizations' | 'overview' | 'trend' | 'ranking' | 'exceptions'
 type FilterError = 'dateRange' | null
 type SdkResult<T> = { data?: T; error?: unknown; response: Response }
 
-const sections: Section[] = ['overview', 'trend', 'ranking', 'exceptions']
+const analyticsSections: Section[] = ['overview', 'trend', 'ranking', 'exceptions']
+const sections: Section[] = ['organizations', ...analyticsSections]
 const defaults = (): DashboardFilters => ({ granularity: 'week', ranking_limit: 10, exception_page: 1, exception_page_size: 20 })
 const panel = <T>(): PanelState<T> => ({ status: 'idle', data: null })
-const controllers: Record<Section, AbortController | null> = { overview: null, trend: null, ranking: null, exceptions: null }
-const requestIds: Record<Section, number> = { overview: 0, trend: 0, ranking: 0, exceptions: 0 }
+const controllers: Record<Section, AbortController | null> = { organizations: null, overview: null, trend: null, ranking: null, exceptions: null }
+const requestIds: Record<Section, number> = { organizations: 0, overview: 0, trend: 0, ranking: 0, exceptions: 0 }
 
 function query(filters: DashboardFilters) {
   return {
@@ -45,11 +47,13 @@ type State = {
   draft: DashboardFilters
   applied: DashboardFilters
   filterError: FilterError
+  organizations: PanelState<DashboardOrganizationOption[]>
   overview: PanelState<DashboardOverview>
   trend: PanelState<DashboardTrend>
   ranking: PanelState<EmployeeWorkHoursRanking>
   exceptions: PanelState<ExceptionResult>
   setDraft: (patch: Partial<DashboardFilters>) => void
+  initialize: () => Promise<void>
   loadAll: () => Promise<void>
   apply: () => Promise<void>
   reset: () => Promise<void>
@@ -86,6 +90,7 @@ export const useDashboardStore = create<State>((set, get) => {
 
   const loadSection = async (section: Section) => {
     const filters = get().applied; const base = query(filters)
+    if (section === 'organizations') return run<SuccessResponseListDashboardOrganizationOption, DashboardOrganizationOption[]>(section, (signal) => fetchOrganizations({ signal }), (data) => data.data, () => false)
     if (section === 'overview') return run<SuccessResponseDashboardOverview, DashboardOverview>(section, (signal) => fetchOverview({ query: base, signal }), (data) => data.data, (data) => data.data_status === 'empty')
     if (section === 'trend') return run<SuccessResponseDashboardTrend, DashboardTrend>(section, (signal) => fetchTrend({ query: { ...base, granularity: filters.granularity }, signal }), (data) => data.data, (data) => data.points.length === 0)
     if (section === 'ranking') return run<SuccessResponseEmployeeWorkHoursRanking, EmployeeWorkHoursRanking>(section, (signal) => fetchRanking({ query: { ...base, limit: filters.ranking_limit }, signal }), (data) => data.data, (data) => data.items.length === 0)
@@ -94,16 +99,17 @@ export const useDashboardStore = create<State>((set, get) => {
 
   return {
     draft: defaults(), applied: defaults(), filterError: null,
-    overview: panel(), trend: panel(), ranking: panel(), exceptions: panel(),
+    organizations: panel(), overview: panel(), trend: panel(), ranking: panel(), exceptions: panel(),
     setDraft: (patch) => set((state) => ({ draft: { ...state.draft, ...patch }, filterError: null })),
-    loadAll: async () => { await Promise.allSettled(sections.map(loadSection)) },
+    initialize: async () => { await Promise.allSettled(sections.map(loadSection)) },
+    loadAll: async () => { await Promise.allSettled(analyticsSections.map(loadSection)) },
     apply: async () => {
       const draft = get().draft
       if (invalidDateRange(draft)) { set({ filterError: 'dateRange' }); return }
       const next = { ...draft, exception_page: 1 }; set({ applied: next, draft: next, filterError: null }); await get().loadAll()
     },
     reset: async () => { const next = defaults(); set({ draft: next, applied: next, filterError: null }); await get().loadAll() },
-    refresh: async () => get().loadAll(),
+    refresh: async () => { await Promise.allSettled(sections.map(loadSection)) },
     setGranularity: async (value) => { set((state) => ({ draft: { ...state.draft, granularity: value }, applied: { ...state.applied, granularity: value } })); await loadSection('trend') },
     setRankingLimit: async (limit) => { set((state) => ({ draft: { ...state.draft, ranking_limit: limit }, applied: { ...state.applied, ranking_limit: limit } })); await loadSection('ranking') },
     setExceptionPage: async (page) => { set((state) => ({ draft: { ...state.draft, exception_page: page }, applied: { ...state.applied, exception_page: page } })); await loadSection('exceptions') },

@@ -223,10 +223,13 @@ def build_seed_rows() -> dict:
         "gmt_modified": CREATED_AT, "gmt_create": CREATED_AT,
     })
 
-    for exception_id, (day, employee_index, label, moment) in enumerate([
-        (missing_exit[0], missing_exit[1], "missing-exit", datetime(2025, 9, 15, 8, 10)),
-        (missing_entry[0], missing_entry[1], "missing-entry", datetime(2025, 10, 20, 16, 20)),
-        (corrected[0], corrected[1], "corrected-duplicate", datetime(2026, 1, 14, 8, 11)),
+    for exception_id, (day, employee_index, label, moment, device_key, device_name) in enumerate([
+        (missing_exit[0], missing_exit[1], "missing-exit", datetime(2025, 9, 15, 8, 10), "SYN-DEVICE-GATE-A", "Synthetic Main Gate A"),
+        (missing_entry[0], missing_entry[1], "missing-entry", datetime(2025, 10, 20, 16, 20), "SYN-DEVICE-GATE-A", "Synthetic Main Gate A"),
+        (corrected[0], corrected[1], "corrected-duplicate", datetime(2026, 1, 14, 8, 11), "SYN-DEVICE-GATE-A", "Synthetic Main Gate A"),
+        (SEED_END - timedelta(days=21), 7, "recent-001", datetime.combine(SEED_END - timedelta(days=21), time(8, 7)), "SYN-DEVICE-GATE-A", "Synthetic Main Gate A"),
+        (SEED_END - timedelta(days=14), 8, "recent-002", datetime.combine(SEED_END - timedelta(days=14), time(12, 22)), "SYN-DEVICE-GATE-B", "Synthetic Main Gate B"),
+        (SEED_END - timedelta(days=1), 9, "recent-003", datetime.combine(SEED_END - timedelta(days=1), time(16, 18)), "SYN-DEVICE-GATE-A", "Synthetic Main Gate A"),
     ], start=1):
         employee = EMPLOYEES[employee_index - 1]
         exceptions.append({
@@ -236,8 +239,8 @@ def build_seed_rows() -> dict:
             "report_date": day,
             "clock_time": moment,
             "clock_photo_id": f"SYN-EXCEPTION-{label}",
-            "device_key": "SYN-DEVICE-GATE-A",
-            "device_name": "Synthetic Main Gate A",
+            "device_key": device_key,
+            "device_name": device_name,
             "del_status": ACTIVE,
             "gmt_modified": CREATED_AT,
             "gmt_create": CREATED_AT,

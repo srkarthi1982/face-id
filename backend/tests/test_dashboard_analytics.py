@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, insert
 from sqlalchemy.dialects import mssql, postgresql
+from sqlalchemy.pool import StaticPool
 
 from app.core.permissions import PermissionCode
 from app.core import deps
@@ -108,7 +109,7 @@ def test_dashboard_registration_is_router_only_and_lazy(monkeypatch):
     importlib.reload(repository)
     importlib.reload(service)
     assert db._engine is None
-    assert len(dashboard_router.routes) == 4
+    assert len(dashboard_router.routes) == 5
 
 
 def test_runtime_analytics_modules_have_no_primary_session_or_writes():
@@ -120,6 +121,7 @@ def test_runtime_analytics_modules_have_no_primary_session_or_writes():
     assert "insert(" not in combined
     assert "update(" not in combined
     assert "delete(" not in combined
+    assert "text(" not in combined
     assert "saas_ca_clock_record" not in combined
     assert "require_role" not in combined
     assert "PermissionCode.ANALYTICS_READ" in inspect.getsource(router_module)
@@ -131,6 +133,7 @@ def test_runtime_analytics_modules_have_no_primary_session_or_writes():
     "builder,args",
     [
         (repository.latest_report_date_statement, ("ORG",)),
+        (repository.organizations_statement, ()),
         (repository.overview_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
         (repository.scoped_identity_count_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
         (repository.trend_dates_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
@@ -172,7 +175,9 @@ def test_empty_source_has_null_effective_dates_and_zero_totals(monkeypatch):
     _stub_range(monkeypatch, [], latest=None)
     result = service.get_overview(date(2020, 1, 1), date(2020, 1, 2), None, 3660)
     assert result.data_status.value == "empty"
-    assert result.effective_start_date is None
+    assert result.effective_start_date == date(2020, 1, 1)
+    assert result.effective_end_date == date(2020, 1, 2)
+    assert result.source_latest_report_date is None
     assert result.actual_seconds == 0
 
 
@@ -325,6 +330,187 @@ def test_repository_filters_deleted_and_org_and_enriches_without_duplicates(monk
         db.dispose_luna_engine()
 
 
+def test_organizations_include_all_approved_sources_trim_sort_and_filter(monkeypatch):
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS dbo")
+        for table in (saas_ca_person, saas_ca_report_daily, saas_ca_report_exception):
+            table.create(connection)
+        seed = build_seed_rows()
+        connection.execute(insert(saas_ca_person), [
+            dict(seed["persons"][0], id=1, org_id="  PERSON-Z  "),
+            dict(seed["persons"][1], id=2, org_id="DUPLICATE"),
+            dict(seed["persons"][2], id=3, org_id="DELETED", del_status=1),
+            dict(seed["persons"][3], id=4, org_id="   "),
+            dict(seed["persons"][4], id=5, org_id=None),
+        ])
+        connection.execute(insert(saas_ca_report_daily), [
+            dict(seed["daily"][0], id=10, org_id="DAILY-A"),
+            dict(seed["daily"][1], id=11, org_id=" DUPLICATE "),
+        ])
+        connection.execute(insert(saas_ca_report_exception), [
+            dict(seed["exceptions"][0], id=20, org_id="EXCEPTION-M"),
+            dict(seed["exceptions"][1], id=21, org_id="DELETED-EXCEPTION", del_status=1),
+        ])
+    monkeypatch.setattr(db, "_engine", engine)
+    try:
+        assert [item.org_id for item in service.get_organizations()] == [
+            "DAILY-A", "DUPLICATE", "EXCEPTION-M", "PERSON-Z",
+        ]
+    finally:
+        db.dispose_luna_engine()
+
+
+def test_organizations_empty_and_repository_execution_is_bounded(monkeypatch):
+    calls = []
+    monkeypatch.setattr(repository, "_execute_luna_select", lambda statement: calls.append(statement) or [])
+    assert service.get_organizations() == []
+    assert len(calls) == 1
+    compiled = str(calls[0].compile(dialect=postgresql.dialect())).lower()
+    assert "saas_ca_clock_record" not in compiled
+    assert compiled.count("select distinct") == 4
+
+
+def test_padded_organizations_are_canonical_across_analytics_and_enrichment(monkeypatch):
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS dbo")
+        for table in (saas_ca_person, saas_ca_report_daily, saas_ca_report_exception):
+            table.create(connection)
+        seed = build_seed_rows()
+        daily_base = seed["daily"][0]
+        connection.execute(insert(saas_ca_report_daily), [
+            dict(daily_base, id=1, org_id="ORG-A", person_id="P1", report_date=date(2026, 1, 1), real_work_time=10),
+            dict(daily_base, id=2, org_id=" ORG-A", person_id="P1", report_date=date(2026, 1, 2), real_work_time=20),
+            dict(daily_base, id=3, org_id="ORG-A ", person_id="P1", report_date=date(2026, 1, 3), real_work_time=30),
+            dict(daily_base, id=4, org_id="   ", person_id="BLANK", report_date=date(2026, 1, 3)),
+        ])
+        connection.execute(insert(saas_ca_person), [
+            dict(seed["persons"][0], id=10, org_id=" ORG-A ", person_id="P1", person_no="ENRICHED"),
+            dict(seed["persons"][1], id=11, org_id="DELETED", del_status=1),
+        ])
+        connection.execute(insert(saas_ca_report_exception), [
+            dict(seed["exceptions"][0], id=20, org_id="ORG-A ", person_id="P1", report_date=date(2026, 1, 2)),
+        ])
+    monkeypatch.setattr(db, "_engine", engine)
+    try:
+        assert [item.org_id for item in service.get_organizations()] == ["ORG-A"]
+        overview = service.get_overview(date(2026, 1, 1), date(2026, 1, 3), " ORG-A ", 3660)
+        assert overview.org_id == "ORG-A"
+        assert overview.report_row_count == 3
+        assert overview.employee_count == 1
+        trend = service.get_trend(
+            date(2026, 1, 1), date(2026, 1, 3), "ORG-A", DashboardTrendGranularity.WEEK, 3660
+        )
+        assert sum(point.report_row_count for point in trend.points) == 3
+        assert trend.points[0].employee_count == 1
+        ranking = service.get_ranking(date(2026, 1, 1), date(2026, 1, 3), "ORG-A", 10, 3660)
+        assert len(ranking.items) == 1
+        assert ranking.items[0].org_id == "ORG-A"
+        assert ranking.items[0].actual_seconds == 60
+        exceptions, meta = service.get_attendance_exceptions(
+            date(2026, 1, 1), date(2026, 1, 3), "ORG-A", 1, 20, 3660
+        )
+        assert meta.total == 1
+        assert exceptions[0].org_id == "ORG-A"
+        assert exceptions[0].person_no == "ENRICHED"
+    finally:
+        db.dispose_luna_engine()
+
+
+def test_whitespace_only_requested_org_behaves_as_unfiltered(monkeypatch):
+    captured = []
+    monkeypatch.setattr(repository, "get_latest_report_date", lambda org_id=None: captured.append(org_id) or date(2026, 1, 1))
+    resolved = service.resolve_range(None, None, "   ", 3660)
+    assert captured == [None]
+    assert resolved.org_id is None
+
+
+def test_exception_only_organization_honors_explicit_ranges_in_service_and_http(monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    exception_day = date(2026, 4, 15)
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS dbo")
+        for table in (saas_ca_person, saas_ca_report_daily, saas_ca_report_exception):
+            table.create(connection)
+        seed = build_seed_rows()
+        connection.execute(insert(saas_ca_person), [
+            dict(seed["persons"][0], id=100, org_id=" EXCEPT-ONLY ", person_id="PX", person_no="E-ONLY"),
+        ])
+        connection.execute(insert(saas_ca_report_exception), [
+            dict(seed["exceptions"][0], id=200, org_id="EXCEPT-ONLY ", person_id="PX", report_date=exception_day),
+        ])
+    monkeypatch.setattr(db, "_engine", engine)
+    app = FastAPI()
+    app.include_router(dashboard_router)
+    guard = dashboard_router.routes[0].dependencies[0].dependency
+    app.dependency_overrides[guard] = lambda: object()
+    client = TestClient(app)
+    params = {"start_date": "2026-04-01", "end_date": "2026-04-30", "org_id": " EXCEPT-ONLY "}
+    try:
+        assert [item.org_id for item in service.get_organizations()] == ["EXCEPT-ONLY"]
+        overview = service.get_overview(date(2026, 4, 1), date(2026, 4, 30), " EXCEPT-ONLY ", 3660)
+        assert overview.effective_start_date == date(2026, 4, 1)
+        assert overview.effective_end_date == date(2026, 4, 30)
+        assert overview.source_latest_report_date is None
+        assert overview.org_id == "EXCEPT-ONLY"
+        assert overview.report_row_count == 0
+        assert overview.report_day_count == 0
+        assert overview.employee_count == 0
+        assert overview.actual_seconds == 0
+        assert overview.reported_exception_count == 1
+        assert overview.data_status.value == "available"
+
+        items, meta = service.get_attendance_exceptions(
+            date(2026, 4, 1), date(2026, 4, 30), "EXCEPT-ONLY", 1, 20, 3660
+        )
+        assert meta.total == 1
+        assert items[0].org_id == "EXCEPT-ONLY"
+        assert items[0].person_no == "E-ONLY"
+
+        end_only = service.resolve_range(None, date(2026, 4, 30), "EXCEPT-ONLY", 3660)
+        assert end_only.start == date(2026, 4, 1)
+        assert end_only.end == date(2026, 4, 30)
+        assert end_only.latest is None
+        no_end = service.resolve_range(None, None, "EXCEPT-ONLY", 3660)
+        assert no_end.start is None and no_end.end is None and no_end.latest is None
+        empty = service.get_overview(date(2026, 4, 1), date(2026, 4, 30), "EMPTY", 3660)
+        assert empty.data_status.value == "empty"
+
+        organizations_response = client.get("/dashboard/organizations")
+        assert organizations_response.status_code == 200
+        assert organizations_response.json()["data"] == [{"org_id": "EXCEPT-ONLY"}]
+        overview_response = client.get("/dashboard/overview", params=params)
+        assert overview_response.status_code == 200
+        overview_data = overview_response.json()["data"]
+        assert overview_data["effective_start_date"] == "2026-04-01"
+        assert overview_data["effective_end_date"] == "2026-04-30"
+        assert overview_data["source_latest_report_date"] is None
+        assert overview_data["reported_exception_count"] == 1
+        assert overview_data["data_status"] == "available"
+        exceptions_response = client.get("/dashboard/attendance-exceptions", params=params)
+        assert exceptions_response.status_code == 200
+        assert exceptions_response.json()["data"][0]["person_no"] == "E-ONLY"
+        trend_response = client.get(
+            "/dashboard/work-hours/trend", params={**params, "granularity": "day"}
+        )
+        assert trend_response.status_code == 200
+        assert trend_response.json()["data"]["effective_start_date"] == "2026-04-01"
+        assert trend_response.json()["data"]["points"] == []
+        ranking_response = client.get(
+            "/dashboard/work-hours/ranking", params={**params, "limit": 10}
+        )
+        assert ranking_response.status_code == 200
+        assert ranking_response.json()["data"]["effective_end_date"] == "2026-04-30"
+        assert ranking_response.json()["data"]["items"] == []
+    finally:
+        db.dispose_luna_engine()
+
+
 def test_bounded_aggregates_and_namespace_safe_identity(monkeypatch):
     engine = create_engine("sqlite://")
     with engine.begin() as connection:
@@ -393,6 +579,7 @@ def test_bounded_aggregates_and_namespace_safe_identity(monkeypatch):
 @pytest.mark.parametrize(
     "path",
     [
+        "/dashboard/organizations",
         "/dashboard/overview",
         "/dashboard/work-hours/trend",
         "/dashboard/work-hours/ranking",
@@ -441,9 +628,21 @@ def test_safe_503_hides_configuration_and_query_failure_details(monkeypatch, fai
     assert "secret" not in response.text
 
 
+def test_organizations_failure_returns_sanitized_503(monkeypatch):
+    app = FastAPI(); app.include_router(dashboard_router)
+    guard = dashboard_router.routes[0].dependencies[0].dependency
+    app.dependency_overrides[guard] = lambda: object()
+    monkeypatch.setattr(service, "get_organizations", lambda: (_ for _ in ()).throw(db.LunaUnavailableError("sql secret")))
+    response = TestClient(app).get("/dashboard/organizations")
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Attendance analytics are temporarily unavailable"}
+    assert "secret" not in response.text
+
+
 @pytest.mark.parametrize(
     "path",
     [
+        "/dashboard/organizations",
         "/dashboard/overview", "/dashboard/work-hours/trend",
         "/dashboard/work-hours/ranking", "/dashboard/attendance-exceptions",
     ],
@@ -476,12 +675,14 @@ def test_exact_analytics_permission_succeeds_independent_of_role_name(monkeypatc
 @pytest.mark.parametrize(
     "path",
     [
+        "/dashboard/organizations",
         "/dashboard/overview", "/dashboard/work-hours/trend",
         "/dashboard/work-hours/ranking", "/dashboard/attendance-exceptions",
     ],
 )
 def test_every_route_succeeds_with_permission_guard(path, monkeypatch):
     _stub_range(monkeypatch, [])
+    monkeypatch.setattr(repository, "get_organizations", lambda: [])
     monkeypatch.setattr(repository, "get_exceptions", lambda *args: [])
     app = FastAPI()
     app.include_router(dashboard_router)
