@@ -9,7 +9,7 @@ declare module 'd3' {
     (value: number): number
     domain(values: Iterable<number>): ScaleLinear
     range(values: Iterable<number>): ScaleLinear
-    nice(): ScaleLinear
+    nice(count?: number): ScaleLinear
     ticks(count?: number): number[]
   }
   export interface LineGenerator<Datum> {
