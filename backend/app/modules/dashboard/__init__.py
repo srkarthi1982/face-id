@@ -1,5 +1,5 @@
-"""Dashboard data-source foundation.
+"""Read-only dashboard analytics module with lazy Luna connectivity."""
 
-This package intentionally exports no FastAPI router in this phase. Importing
-it has no database, schema-creation, or network side effects.
-"""
+from .router import router
+
+__all__ = ["router"]

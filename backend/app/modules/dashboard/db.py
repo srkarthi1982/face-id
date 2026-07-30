@@ -8,6 +8,7 @@ from threading import Lock
 from typing import Any
 
 from sqlalchemy import Table, create_engine, select
+from sqlalchemy.sql import Select
 from sqlalchemy.engine import Engine, URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -111,3 +112,14 @@ def dispose_luna_engine() -> None:
         if _engine is not None:
             _engine.dispose()
             _engine = None
+
+
+def _execute_luna_select(statement: Select[Any]) -> Sequence[dict[str, Any]]:
+    """Execute an internally built dashboard SELECT with sanitized failures."""
+    if not isinstance(statement, Select):
+        raise TypeError("Dashboard Luna executor accepts SELECT statements only")
+    try:
+        with _get_luna_engine().connect() as connection:
+            return [dict(row) for row in connection.execute(statement).mappings().all()]
+    except (SQLAlchemyError, OSError) as exc:
+        raise LunaUnavailableError("Luna data source is unavailable") from exc
