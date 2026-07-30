@@ -27,13 +27,24 @@ seconds for all duration values. Provisional raw punch mapping is `clock_type=1`
 for entry and `clock_type=2` for exit. Confirm both conventions with real Luna
 data before production integration.
 
+Seeding is a transactional synchronization limited to `org_id=SYNTHETIC-ORG`.
+Stable primary keys are inserted when missing and updated only when their
+synthetic values changed; unchanged rows are not rewritten, and colliding
+non-synthetic rows are never modified. The command reports created, updated,
+unchanged, and skipped-non-synthetic counts for each table. Work duration pairs
+completed active entry/exit sessions, excludes breaks, and partitions every
+daily total into normal plus overtime. Weekend work is overtime only.
+
 When both runtime-role variables are supplied, setup creates the role only when
 it does not already exist, applies no password or role-attribute change to an
 existing role, and grants only the documented read privileges. When they are
 absent, setup leaves roles untouched and reports that database-enforced
 read-only access is not configured. Partial role configuration is rejected.
+Existing runtime roles with any role membership are also rejected because
+`SET ROLE` could otherwise provide privilege escalation.
 
-The verification command uses `LUNA_DATABASE_URL` and reports safe Boolean
+The verification command uses `LUNA_DATABASE_URL`, fails closed unless the full
+SELECT-only privilege contract is satisfied, and then reports safe Boolean
 privilege results. It never prints credentials, URLs, hosts, or raw errors.
 
 ## Read-only runtime grants

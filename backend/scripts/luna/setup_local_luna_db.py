@@ -22,6 +22,24 @@ except ModuleNotFoundError:  # Direct script execution on Windows.
     )
 
 
+def _validate_existing_runtime_role(existing, has_membership: bool) -> None:
+    if (
+        not existing["rolcanlogin"]
+        or existing["rolsuper"]
+        or existing["rolcreatedb"]
+        or existing["rolcreaterole"]
+        or existing["rolreplication"]
+        or existing["rolinherit"]
+    ):
+        raise LocalLunaSetupError(
+            "Existing Luna runtime role has unsafe attributes and was not altered"
+        )
+    if has_membership:
+        raise LocalLunaSetupError(
+            "Existing Luna runtime role has role memberships and was not altered"
+        )
+
+
 def _create_runtime_role_if_requested(connection, role_config: tuple[str, str] | None) -> bool:
     if role_config is None:
         return False
@@ -44,17 +62,16 @@ def _create_runtime_role_if_requested(connection, role_config: tuple[str, str] |
                 ).format(sql.Identifier(username)),
                 (password,),
             )
-    elif (
-        not existing["rolcanlogin"]
-        or existing["rolsuper"]
-        or existing["rolcreatedb"]
-        or existing["rolcreaterole"]
-        or existing["rolreplication"]
-        or existing["rolinherit"]
-    ):
-        raise LocalLunaSetupError(
-            "Existing Luna runtime role has unsafe attributes and was not altered"
-        )
+    membership = connection.execute(
+        text(
+            "SELECT 1 FROM pg_auth_members membership "
+            "JOIN pg_roles member ON member.oid = membership.member "
+            "WHERE member.rolname = :role LIMIT 1"
+        ),
+        {"role": username},
+    ).scalar_one_or_none()
+    if existing is not None:
+        _validate_existing_runtime_role(existing, membership is not None)
     return True
 
 

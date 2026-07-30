@@ -13,6 +13,24 @@ from app.modules.dashboard.tables import APPROVED_LUNA_TABLES, luna_metadata
 
 
 PROHIBITED_PREFIX = "dashboard"
+SAFE_RUNTIME_PRIVILEGES = {
+    "runtime_role_configured": True,
+    "can_select": True,
+    "can_insert": False,
+    "can_update": False,
+    "can_delete": False,
+    "can_truncate": False,
+    "can_create_table": False,
+    "can_create_schema": False,
+}
+
+
+def validate_runtime_privileges(privileges: dict[str, bool]) -> None:
+    """Fail closed unless every required runtime privilege is exactly safe."""
+    if privileges != SAFE_RUNTIME_PRIVILEGES:
+        raise LocalLunaSetupError(
+            "Luna runtime role does not have the required SELECT-only privileges"
+        )
 
 
 def verify() -> tuple[dict[str, int], dict[str, bool]]:
@@ -60,6 +78,7 @@ def verify() -> tuple[dict[str, int], dict[str, bool]]:
                 "can_create_table": bool(privilege_row["can_create_table"]),
                 "can_create_schema": bool(privilege_row["can_create_schema"]),
             }
+            validate_runtime_privileges(privileges)
             return counts, privileges
     finally:
         engine.dispose()

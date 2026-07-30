@@ -24,7 +24,56 @@ from app.modules.dashboard.tables import (
     saas_ca_report_exception,
 )
 from scripts.luna.common import LocalLunaSetupError, require_postgres_url, runtime_role_config
-from scripts.luna.seed_local_luna_db import SEED_END, _insert_missing, build_seed_rows
+from scripts.luna.seed_local_luna_db import SEED_END, _sync_rows, build_seed_rows
+from scripts.luna.setup_local_luna_db import _validate_existing_runtime_role
+from scripts.luna.verify_local_luna_db import (
+    SAFE_RUNTIME_PRIVILEGES,
+    validate_runtime_privileges,
+)
+
+
+EXPECTED_COLUMNS = {
+    "saas_ca_person": [
+        ("id", "BIGINT", None, False, True, True), ("org_id", "VARCHAR", 64, True, False, False),
+        ("person_id", "VARCHAR", 64, True, False, False), ("person_no", "VARCHAR", 64, True, False, False),
+        ("person_name", "VARCHAR", 200, True, False, False), ("del_status", "SMALLINT", None, False, False, False),
+        ("gmt_modified", "DATETIME", None, True, False, False), ("gmt_create", "DATETIME", None, True, False, False),
+    ],
+    "saas_ca_clock_record": [
+        ("id", "BIGINT", None, False, True, True), ("org_id", "VARCHAR", 64, True, False, False),
+        ("record_id", "VARCHAR", 64, True, False, False), ("person_id", "VARCHAR", 64, True, False, False),
+        ("person_no", "VARCHAR", 64, True, False, False), ("photo_id", "VARCHAR", 64, True, False, False),
+        ("photo_url", "VARCHAR", 255, True, False, False), ("device_key", "VARCHAR", 64, True, False, False),
+        ("recognition_time", "BIGINT", None, True, False, False), ("fix_status", "SMALLINT", None, True, False, False),
+        ("del_status", "SMALLINT", None, False, False, False), ("gmt_modified", "DATETIME", None, True, False, False),
+        ("gmt_create", "DATETIME", None, True, False, False), ("clock_type", "INTEGER", None, True, False, False),
+        ("person_name", "VARCHAR", 255, True, False, False), ("device_name", "VARCHAR", 255, True, False, False),
+    ],
+    "saas_ca_report_daily": [
+        ("id", "BIGINT", None, False, True, True), ("org_id", "VARCHAR", 64, True, False, False),
+        ("report_date", "DATE", None, True, False, False), ("person_id", "VARCHAR", 64, True, False, False),
+        ("person_no", "VARCHAR", 64, True, False, False), ("person_name", "VARCHAR", 255, True, False, False),
+        ("dept_name", "VARCHAR", 255, True, False, False), ("interval_id", "BIGINT", None, True, False, False),
+        ("interval_name", "VARCHAR", 255, True, False, False), ("plan_sign_in_datetime", "DATETIME", None, True, False, False),
+        ("plan_sign_out_datetime", "DATETIME", None, True, False, False), ("plan_work_time", "BIGINT", None, True, False, False),
+        ("clock_sign_in_datetime", "DATETIME", None, True, False, False), ("clock_sign_in_status", "SMALLINT", None, True, False, False),
+        ("clock_sign_out_datetime", "DATETIME", None, True, False, False), ("clock_sign_out_status", "SMALLINT", None, True, False, False),
+        ("real_work_time", "BIGINT", None, True, False, False), ("normal_time", "BIGINT", None, True, False, False),
+        ("late_time", "BIGINT", None, True, False, False), ("early_time", "BIGINT", None, True, False, False),
+        ("absent_time", "BIGINT", None, True, False, False), ("sign_start_time", "DATETIME", None, True, False, False),
+        ("sign_end_time", "DATETIME", None, True, False, False), ("overwork_time", "BIGINT", None, True, False, False),
+        ("date_type", "SMALLINT", None, True, False, False), ("del_status", "SMALLINT", None, False, False, False),
+        ("gmt_modified", "DATETIME", None, True, False, False), ("gmt_create", "DATETIME", None, True, False, False),
+    ],
+    "saas_ca_report_exception": [
+        ("id", "BIGINT", None, False, True, True), ("org_id", "VARCHAR", 64, True, False, False),
+        ("person_id", "VARCHAR", 64, True, False, False), ("report_date", "DATE", None, True, False, False),
+        ("clock_time", "DATETIME", None, True, False, False), ("clock_photo_id", "VARCHAR", 256, True, False, False),
+        ("device_key", "VARCHAR", 64, True, False, False), ("device_name", "VARCHAR", 128, True, False, False),
+        ("del_status", "SMALLINT", None, False, False, False), ("gmt_modified", "DATETIME", None, True, False, False),
+        ("gmt_create", "DATETIME", None, True, False, False),
+    ],
+}
 
 
 def test_luna_metadata_is_isolated_and_exact() -> None:
@@ -38,6 +87,29 @@ def test_luna_metadata_is_isolated_and_exact() -> None:
 def test_all_luna_tables_use_dbo_schema_and_match_63_vendor_columns() -> None:
     assert {table.schema for table in luna_metadata.tables.values()} == {"dbo"}
     assert sum(len(table.columns) for table in luna_metadata.tables.values()) == 63
+    for table in luna_metadata.tables.values():
+        actual = [
+            (column.name, str(column.type).split("(", 1)[0], getattr(column.type, "length", None),
+             column.nullable, column.primary_key, column.identity is not None)
+            for column in table.columns
+        ]
+        assert actual == EXPECTED_COLUMNS[table.name]
+
+
+@pytest.mark.parametrize("unsafe_key", SAFE_RUNTIME_PRIVILEGES)
+def test_runtime_privilege_validator_fails_closed(unsafe_key: str) -> None:
+    unsafe = SAFE_RUNTIME_PRIVILEGES.copy()
+    unsafe[unsafe_key] = not unsafe[unsafe_key]
+    with pytest.raises(LocalLunaSetupError, match="SELECT-only"):
+        validate_runtime_privileges(unsafe)
+
+
+def test_runtime_privilege_validator_accepts_only_exact_safe_contract() -> None:
+    validate_runtime_privileges(SAFE_RUNTIME_PRIVILEGES.copy())
+    incomplete = SAFE_RUNTIME_PRIVILEGES.copy()
+    incomplete.pop("can_delete")
+    with pytest.raises(LocalLunaSetupError, match="SELECT-only"):
+        validate_runtime_privileges(incomplete)
 
 
 def test_runtime_module_has_no_schema_creation_or_write_api() -> None:
@@ -131,6 +203,20 @@ def test_partial_runtime_role_configuration_is_rejected(
         runtime_role_config()
 
 
+def test_existing_runtime_role_membership_is_rejected_without_mutation() -> None:
+    safe_attributes = {
+        "rolcanlogin": True,
+        "rolsuper": False,
+        "rolcreatedb": False,
+        "rolcreaterole": False,
+        "rolreplication": False,
+        "rolinherit": False,
+    }
+    _validate_existing_runtime_role(safe_attributes, False)
+    with pytest.raises(LocalLunaSetupError, match="role memberships"):
+        _validate_existing_runtime_role(safe_attributes, True)
+
+
 def test_seed_rows_are_stable_and_have_unique_primary_keys() -> None:
     first = build_seed_rows()
     second = build_seed_rows()
@@ -154,18 +240,53 @@ def test_seed_contains_no_attendance_after_documented_end_date() -> None:
     assert max(row["recognition_time"] for row in rows["clocks"]) <= end_of_seed_ms
 
 
-def test_seed_insert_is_idempotent() -> None:
+def test_seed_sync_is_convergent_and_updates_only_synthetic_rows() -> None:
     engine = create_engine("sqlite://")
     with engine.begin() as connection:
         connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS dbo")
         saas_ca_person.create(connection)
         rows = build_seed_rows()["persons"]
-        assert _insert_missing(connection, saas_ca_person, rows) == 12
-        assert _insert_missing(connection, saas_ca_person, rows) == 0
+        first = _sync_rows(connection, saas_ca_person, rows)
+        assert first == {"created": 12, "updated": 0, "unchanged": 0, "skipped_non_synthetic": 0}
+        changed = dict(rows[0], person_name="stale synthetic name")
+        connection.execute(update(saas_ca_person).where(saas_ca_person.c.id == changed["id"]).values(**changed))
+        second = _sync_rows(connection, saas_ca_person, rows)
+        assert second == {"created": 0, "updated": 1, "unchanged": 11, "skipped_non_synthetic": 0}
+        third = _sync_rows(connection, saas_ca_person, rows)
+        assert third == {"created": 0, "updated": 0, "unchanged": 12, "skipped_non_synthetic": 0}
         assert connection.execute(
             select(func.count()).select_from(saas_ca_person)
         ).scalar_one() == 12
     engine.dispose()
+
+
+def test_seed_sync_never_modifies_non_synthetic_primary_key_collision() -> None:
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS dbo")
+        saas_ca_person.create(connection)
+        desired = build_seed_rows()["persons"][0]
+        vendor = dict(desired, org_id="VENDOR-ORG", person_name="Vendor Person")
+        connection.execute(insert(saas_ca_person), vendor)
+        stats = _sync_rows(connection, saas_ca_person, [desired])
+        assert stats == {"created": 0, "updated": 0, "unchanged": 0, "skipped_non_synthetic": 1}
+        actual = connection.execute(select(saas_ca_person)).mappings().one()
+        assert actual["org_id"] == "VENDOR-ORG"
+        assert actual["person_name"] == "Vendor Person"
+    engine.dispose()
+
+
+def test_seed_daily_aggregates_pair_sessions_and_partition_real_time() -> None:
+    daily = build_seed_rows()["daily"]
+    multiple = next(row for row in daily if row["id"] == 2025111804)
+    assert multiple["real_work_time"] == int(8.5 * 3600)
+    assert multiple["normal_time"] == 8 * 3600
+    assert multiple["overwork_time"] == int(0.5 * 3600)
+    weekend = next(row for row in daily if row["id"] == 2026021407)
+    assert weekend["real_work_time"] == 5 * 3600
+    assert weekend["normal_time"] == 0
+    assert weekend["overwork_time"] == 5 * 3600
+    assert all(row["normal_time"] + row["overwork_time"] == row["real_work_time"] for row in daily)
 
 
 def test_representative_select_through_narrow_runtime_helper(

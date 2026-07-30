@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 
-from sqlalchemy import create_engine, delete, insert, select
+from sqlalchemy import create_engine, delete, insert, select, update
 
 try:
     from scripts.luna.common import LocalLunaSetupError, target_admin_url
@@ -74,6 +74,21 @@ def _clock_row(day: date, employee, sequence: int, moment: datetime, clock_type:
         "person_name": person_name,
         "device_name": "Synthetic Main Gate A" if index % 2 else "Synthetic Main Gate B",
     }
+
+
+def _completed_session_seconds(punches: list[tuple[datetime, int, int, int]]) -> int:
+    """Pair active entry/exit punches and exclude time between sessions."""
+    active_entry: datetime | None = None
+    total = 0
+    for moment, clock_type, _fix_status, del_status in sorted(punches):
+        if del_status != ACTIVE:
+            continue
+        if clock_type == CLOCK_TYPE_ENTRY and active_entry is None:
+            active_entry = moment
+        elif clock_type == CLOCK_TYPE_EXIT and active_entry is not None:
+            total += max(int((moment - active_entry).total_seconds()), 0)
+            active_entry = None
+    return total
 
 
 def build_seed_rows() -> dict:
@@ -146,7 +161,7 @@ def build_seed_rows() -> dict:
                     fix_status=fix_status, del_status=del_status,
                 ))
 
-            real_seconds = int((departure - arrival).total_seconds()) if arrival and departure else 0
+            real_seconds = _completed_session_seconds(punches)
             normal_seconds = min(real_seconds, 8 * 3600)
             over_seconds = max(real_seconds - 8 * 3600, 0)
             late_seconds = max(int((arrival - planned_in).total_seconds()), 0) if arrival else 8 * 3600
@@ -202,7 +217,7 @@ def build_seed_rows() -> dict:
         "plan_work_time": 5 * 3600, "clock_sign_in_datetime": arrival,
         "clock_sign_in_status": 0, "clock_sign_out_datetime": departure,
         "clock_sign_out_status": 0, "real_work_time": 5 * 3600,
-        "normal_time": 5 * 3600, "late_time": 0, "early_time": 0,
+        "normal_time": 0, "late_time": 0, "early_time": 0,
         "absent_time": 0, "sign_start_time": arrival, "sign_end_time": departure,
         "overwork_time": 5 * 3600, "date_type": 1, "del_status": ACTIVE,
         "gmt_modified": CREATED_AT, "gmt_create": CREATED_AT,
@@ -231,18 +246,36 @@ def build_seed_rows() -> dict:
     return {"persons": persons, "clocks": clocks, "daily": daily, "exceptions": exceptions}
 
 
-def _insert_missing(connection, table, rows: list[dict]) -> int:
+def _sync_rows(connection, table, rows: list[dict]) -> dict[str, int]:
+    """Converge stable synthetic rows without modifying non-synthetic records."""
+    stats = {"created": 0, "updated": 0, "unchanged": 0, "skipped_non_synthetic": 0}
     if not rows:
-        return 0
+        return stats
     ids = [row["id"] for row in rows]
-    existing = set(connection.execute(select(table.c.id).where(table.c.id.in_(ids))).scalars())
-    missing = [row for row in rows if row["id"] not in existing]
-    if missing:
-        connection.execute(insert(table), missing)
-    return len(missing)
+    existing = {
+        row["id"]: row
+        for row in connection.execute(select(table).where(table.c.id.in_(ids))).mappings()
+    }
+    for desired in rows:
+        current = existing.get(desired["id"])
+        if current is None:
+            connection.execute(insert(table), desired)
+            stats["created"] += 1
+        elif current["org_id"] != ORG_ID:
+            stats["skipped_non_synthetic"] += 1
+        elif any(current[column] != value for column, value in desired.items()):
+            connection.execute(
+                update(table)
+                .where(table.c.id == desired["id"], table.c.org_id == ORG_ID)
+                .values(**desired)
+            )
+            stats["updated"] += 1
+        else:
+            stats["unchanged"] += 1
+    return stats
 
 
-def seed() -> dict[str, int]:
+def seed() -> dict[str, dict[str, int]]:
     rows = build_seed_rows()
     engine = create_engine(target_admin_url())
     try:
@@ -263,10 +296,10 @@ def seed() -> dict[str, int]:
                 saas_ca_clock_record.c.recognition_time > end_of_seed_ms,
             ))
             return {
-                "saas_ca_person": _insert_missing(connection, saas_ca_person, rows["persons"]),
-                "saas_ca_clock_record": _insert_missing(connection, saas_ca_clock_record, rows["clocks"]),
-                "saas_ca_report_daily": _insert_missing(connection, saas_ca_report_daily, rows["daily"]),
-                "saas_ca_report_exception": _insert_missing(connection, saas_ca_report_exception, rows["exceptions"]),
+                "saas_ca_person": _sync_rows(connection, saas_ca_person, rows["persons"]),
+                "saas_ca_clock_record": _sync_rows(connection, saas_ca_clock_record, rows["clocks"]),
+                "saas_ca_report_daily": _sync_rows(connection, saas_ca_report_daily, rows["daily"]),
+                "saas_ca_report_exception": _sync_rows(connection, saas_ca_report_exception, rows["exceptions"]),
             }
     finally:
         engine.dispose()
@@ -274,14 +307,15 @@ def seed() -> dict[str, int]:
 
 def main() -> None:
     try:
-        created = seed()
+        stats = seed()
     except LocalLunaSetupError as exc:
         raise SystemExit(f"Local Luna seed failed: {exc}") from None
     except Exception:
         raise SystemExit("Local Luna seed failed; run setup and check local configuration") from None
     print("Local Luna synthetic seed complete.")
-    for table_name, count in created.items():
-        print(f"  {table_name}: {count} created")
+    for table_name, table_stats in stats.items():
+        rendered = ", ".join(f"{name}={count}" for name, count in table_stats.items())
+        print(f"  {table_name}: {rendered}")
 
 
 if __name__ == "__main__":
