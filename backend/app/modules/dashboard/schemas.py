@@ -63,6 +63,7 @@ class DashboardTrend(DashboardDateRange):
 
 class EmployeeWorkHoursRankingItem(DurationTotals):
     rank: int = Field(ge=1)
+    org_id: str | None
     employee_key: str
     person_id: str | None
     person_no: str | None

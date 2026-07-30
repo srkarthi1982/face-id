@@ -68,16 +68,10 @@ def resolve_range(
     return EffectiveRange(effective_start, effective_end, latest, org_id)
 
 
-def _identity(row: dict[str, Any]) -> str | None:
-    person_id = (row.get("person_id") or "").strip()
-    person_no = (row.get("person_no") or "").strip()
-    return person_id or person_no or None
-
-
-def _totals(rows) -> dict[str, int]:
+def _aggregate_totals(rows) -> dict[str, int]:
     return {
-        response_name: max(sum(int(row.get(source_name) or 0) for row in rows), 0)
-        for response_name, source_name in _DURATION_COLUMNS.items()
+        response_name: max(sum(int(row.get(response_name) or 0) for row in rows), 0)
+        for response_name in _DURATION_COLUMNS
     }
 
 
@@ -92,17 +86,20 @@ def _range_fields(value: EffectiveRange) -> dict[str, Any]:
 
 def get_overview(start_date, end_date, org_id, max_days: int) -> DashboardOverview:
     resolved = resolve_range(start_date, end_date, org_id, max_days)
-    rows = [] if resolved.start is None else list(repository.get_daily_rows(resolved.start, resolved.end, org_id))
+    aggregate = None if resolved.start is None else repository.get_overview_aggregate(
+        resolved.start, resolved.end, org_id
+    )
     exception_count = 0 if resolved.start is None else repository.count_exceptions(resolved.start, resolved.end, org_id)
+    report_row_count = int(aggregate["report_row_count"]) if aggregate else 0
     return DashboardOverview(
         **_range_fields(resolved),
-        data_status=DashboardDataStatus.AVAILABLE if rows else DashboardDataStatus.EMPTY,
+        data_status=DashboardDataStatus.AVAILABLE if report_row_count else DashboardDataStatus.EMPTY,
         duration_unit=DURATION_UNIT,
-        report_row_count=len(rows),
-        report_day_count=len({row["report_date"] for row in rows}),
-        employee_count=len({key for row in rows if (key := _identity(row))}),
+        report_row_count=report_row_count,
+        report_day_count=int(aggregate["report_day_count"]) if aggregate else 0,
+        employee_count=int(aggregate["employee_count"]) if aggregate else 0,
         reported_exception_count=max(exception_count, 0),
-        **_totals(rows),
+        **({name: max(int(aggregate[name] or 0), 0) for name in _DURATION_COLUMNS} if aggregate else _aggregate_totals([])),
     )
 
 
@@ -122,7 +119,9 @@ def _period_bounds(day: date, granularity: DashboardTrendGranularity) -> tuple[s
 
 def get_trend(start_date, end_date, org_id, granularity, max_days: int) -> DashboardTrend:
     resolved = resolve_range(start_date, end_date, org_id, max_days)
-    rows = [] if resolved.start is None else list(repository.get_daily_rows(resolved.start, resolved.end, org_id))
+    rows = [] if resolved.start is None else list(
+        repository.get_trend_date_aggregates(resolved.start, resolved.end, org_id)
+    )
     buckets: dict[str, dict[str, Any]] = {}
     for row in rows:
         key, period_start, period_end = _period_bounds(row["report_date"], granularity)
@@ -139,8 +138,12 @@ def get_trend(start_date, end_date, org_id, granularity, max_days: int) -> Dashb
             period_start=bucket["start"],
             period_end=bucket["end"],
             report_row_count=len(period_rows),
-            employee_count=len({value for row in period_rows if (value := _identity(row))}),
-            **_totals(period_rows),
+            employee_count=(
+                int(period_rows[0]["employee_count"])
+                if granularity == DashboardTrendGranularity.DAY
+                else repository.get_scoped_employee_count(bucket["start"], bucket["end"], org_id)
+            ),
+            **_aggregate_totals(period_rows),
         ))
     return DashboardTrend(
         **_range_fields(resolved),
@@ -153,29 +156,14 @@ def get_trend(start_date, end_date, org_id, granularity, max_days: int) -> Dashb
 
 def get_ranking(start_date, end_date, org_id, limit: int, max_days: int) -> EmployeeWorkHoursRanking:
     resolved = resolve_range(start_date, end_date, org_id, max_days)
-    rows = [] if resolved.start is None else list(repository.get_daily_rows(resolved.start, resolved.end, org_id))
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        if key := _identity(row):
-            groups.setdefault(key, []).append(row)
-    aggregated = []
-    for key, employee_rows in groups.items():
-        first = employee_rows[0]
-        aggregated.append({
-            "employee_key": key,
-            "person_id": first.get("person_id"),
-            "person_no": first.get("person_no"),
-            "person_name": first.get("person_name"),
-            "department_name": first.get("dept_name"),
-            "report_day_count": len({row["report_date"] for row in employee_rows}),
-            **_totals(employee_rows),
-        })
-    aggregated.sort(key=lambda item: (
-        -item["actual_seconds"],
-        item["person_no"] is None, item["person_no"] or "",
-        item["person_id"] is None, item["person_id"] or "",
-    ))
-    items = [EmployeeWorkHoursRankingItem(rank=index, **item) for index, item in enumerate(aggregated[:limit], 1)]
+    rows = [] if resolved.start is None else list(
+        repository.get_ranking_aggregates(resolved.start, resolved.end, org_id, limit)
+    )
+    items = []
+    for index, row in enumerate(rows, 1):
+        item = dict(row)
+        item.pop("identity_source", None)
+        items.append(EmployeeWorkHoursRankingItem(rank=index, **item))
     return EmployeeWorkHoursRanking(
         **_range_fields(resolved),
         data_status=DashboardDataStatus.AVAILABLE if rows else DashboardDataStatus.EMPTY,

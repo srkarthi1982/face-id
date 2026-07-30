@@ -66,6 +66,16 @@ deterministic exception enrichment; when duplicates exist, the lowest active
 person-row ID is selected. The runtime analytics API does not query
 `dbo.saas_ca_clock_record`.
 
+Analytics queries aggregate in Luna SQL before returning results to the
+application: overview is constant-sized, trend returns at most one totals row
+per exact report date, and ranking returns at most the requested limit. The
+internal employee identity is the full tuple `(org_id, identity source,
+normalized identity value)`, preferring a trimmed `person_id` and falling back
+to a trimmed `person_no`. Therefore the displayed `employee_key` is not globally
+unique by itself. Ranking includes `org_id`, and deterministically selects the
+minimum non-null person number, person name, and department across contributing
+daily rows.
+
 When dates are omitted, the effective end date is the latest active daily
 report date for the optional organization, and the start is 29 calendar days
 earlier (a 30-day inclusive window). A reachable source without daily reports

@@ -47,7 +47,53 @@ def _daily(day, person_id="P1", person_no="001", actual=100, deleted=False, org=
 
 def _stub_range(monkeypatch, rows, latest=date(2026, 1, 31), exceptions=0):
     monkeypatch.setattr(repository, "get_latest_report_date", lambda org_id=None: latest)
-    monkeypatch.setattr(repository, "get_daily_rows", lambda *args: rows)
+    duration_map = {
+        "scheduled_seconds": "plan_work_time", "actual_seconds": "real_work_time",
+        "normal_seconds": "normal_time", "overtime_seconds": "overwork_time",
+        "late_seconds": "late_time", "early_seconds": "early_time", "absent_seconds": "absent_time",
+    }
+    def identity(row):
+        person_id = (row.get("person_id") or "").strip()
+        person_no = (row.get("person_no") or "").strip()
+        return (row.get("org_id"), "person_id", person_id) if person_id else (
+            (row.get("org_id"), "person_no", person_no) if person_no else None
+        )
+    def in_range(start, end, org_id=None):
+        return [row for row in rows if start <= row["report_date"] <= end and (org_id is None or row["org_id"] == org_id)]
+    def totals(selected):
+        return {name: sum(int(row.get(column) or 0) for row in selected) for name, column in duration_map.items()}
+    def overview(start, end, org_id=None):
+        selected = in_range(start, end, org_id)
+        return {"report_row_count": len(selected), "report_day_count": len({r["report_date"] for r in selected}),
+                "employee_count": len({value for r in selected if (value := identity(r))}), **totals(selected)}
+    def trend(start, end, org_id=None):
+        selected = in_range(start, end, org_id)
+        return [{"report_date": day, "report_row_count": len(day_rows),
+                 "employee_count": len({value for r in day_rows if (value := identity(r))}), **totals(day_rows)}
+                for day in sorted({r["report_date"] for r in selected})
+                if (day_rows := [r for r in selected if r["report_date"] == day])]
+    def employee_count(start, end, org_id=None):
+        return len({value for r in in_range(start, end, org_id) if (value := identity(r))})
+    def ranking(start, end, org_id, limit):
+        selected = in_range(start, end, org_id)
+        groups = {}
+        for row in selected:
+            if key := identity(row): groups.setdefault(key, []).append(row)
+        result = []
+        for (scope, source, value), group in groups.items():
+            result.append({"org_id": scope, "identity_source": source, "employee_key": value,
+                           "person_id": value if source == "person_id" else None,
+                           "person_no": min((r.get("person_no") for r in group if r.get("person_no")), default=None),
+                           "person_name": min((r.get("person_name") for r in group if r.get("person_name")), default=None),
+                           "department_name": min((r.get("dept_name") for r in group if r.get("dept_name")), default=None),
+                           "report_day_count": len({r["report_date"] for r in group}), **totals(group)})
+        result.sort(key=lambda r: (-r["actual_seconds"], r["person_no"] is None, r["person_no"] or "",
+                                  r["person_id"] is None, r["person_id"] or "", r["org_id"] or ""))
+        return result[:limit]
+    monkeypatch.setattr(repository, "get_overview_aggregate", overview)
+    monkeypatch.setattr(repository, "get_trend_date_aggregates", trend)
+    monkeypatch.setattr(repository, "get_scoped_employee_count", employee_count)
+    monkeypatch.setattr(repository, "get_ranking_aggregates", ranking)
     monkeypatch.setattr(repository, "count_exceptions", lambda *args: exceptions)
 
 
@@ -74,13 +120,19 @@ def test_runtime_analytics_modules_have_no_primary_session_or_writes():
     assert "saas_ca_clock_record" not in combined
     assert "require_role" not in combined
     assert "PermissionCode.ANALYTICS_READ" in inspect.getsource(router_module)
+    assert not hasattr(repository, "get_daily_rows")
+    assert "get_daily_rows" not in inspect.getsource(service)
 
 
 @pytest.mark.parametrize(
     "builder,args",
     [
         (repository.latest_report_date_statement, ("ORG",)),
-        (repository.daily_rows_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
+        (repository.overview_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
+        (repository.scoped_identity_count_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
+        (repository.trend_dates_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
+        (repository.trend_date_identity_counts_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
+        (repository.ranking_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG", 10)),
         (repository.exception_count_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
         (repository.exceptions_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG", 1, 20)),
     ],
@@ -184,7 +236,8 @@ def test_repository_filters_deleted_and_org_and_enriches_without_duplicates(monk
             seed["exceptions"][0], id=100, org_id="ORG", person_id="P1", report_date=date(2026, 1, 1)
         )
         deleted_exception = dict(base_exception, id=101, del_status=1)
-        connection.execute(insert(saas_ca_report_exception), [base_exception, deleted_exception])
+        missing_exception = dict(base_exception, id=99, person_id="MISSING")
+        connection.execute(insert(saas_ca_report_exception), [base_exception, missing_exception, deleted_exception])
     monkeypatch.setattr(db, "_engine", engine)
     try:
         overview = service.get_overview(date(2026, 1, 1), date(2026, 1, 1), "ORG", 3660)
@@ -193,9 +246,78 @@ def test_repository_filters_deleted_and_org_and_enriches_without_duplicates(monk
         items, meta = service.get_attendance_exceptions(
             date(2026, 1, 1), date(2026, 1, 1), "ORG", 1, 1, 3660
         )
-        assert meta.total == 1
+        assert meta.total == 2
+        assert meta.pages == 2
         assert len(items) == 1
         assert items[0].person_no == "LOW"
+        page_two, page_two_meta = service.get_attendance_exceptions(
+            date(2026, 1, 1), date(2026, 1, 1), "ORG", 2, 1, 3660
+        )
+        assert page_two_meta.model_dump() == {"page": 2, "page_size": 1, "total": 2, "pages": 2}
+        assert page_two[0].id == 99
+        assert page_two[0].person_no is None
+        assert page_two[0].person_name is None
+    finally:
+        db.dispose_luna_engine()
+
+
+def test_bounded_aggregates_and_namespace_safe_identity(monkeypatch):
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS dbo")
+        saas_ca_report_daily.create(connection)
+        base = build_seed_rows()["daily"][0]
+        specs = [
+            (1, "A", "123", "900", date(2026, 1, 1), 10, "Zulu", "Zulu Dept", 0),
+            (2, "A", "123", "900", date(2026, 1, 2), 20, "Alpha", "Alpha Dept", 0),
+            (3, "B", "123", "800", date(2026, 1, 1), 30, "B Person", "B Dept", 0),
+            (4, "A", None, "123", date(2026, 1, 1), 40, "Fallback A", "Ops", 0),
+            (5, "B", None, "123", date(2026, 1, 1), 50, "Fallback B", "Ops", 0),
+            (6, "A", "   ", " W ", date(2026, 1, 1), 60, "Whitespace", "Ops", 0),
+            (7, "A", None, "   ", date(2026, 1, 1), 70, "Excluded Identity", "Ops", 0),
+            (8, "A", "DELETED", "D", date(2026, 1, 1), 9999, "Deleted", "Ops", 1),
+        ]
+        rows = []
+        for row_id, org, person_id, person_no, day, actual, name, department, deleted in specs:
+            rows.append(dict(
+                base, id=row_id, org_id=org, person_id=person_id, person_no=person_no,
+                report_date=day, real_work_time=actual, normal_time=actual,
+                plan_work_time=None if row_id == 1 else 100, overwork_time=0,
+                person_name=name, dept_name=department, del_status=deleted,
+            ))
+        connection.execute(insert(saas_ca_report_daily), rows)
+    monkeypatch.setattr(db, "_engine", engine)
+    try:
+        overview = repository.get_overview_aggregate(date(2026, 1, 1), date(2026, 1, 2))
+        trend = repository.get_trend_date_aggregates(date(2026, 1, 1), date(2026, 1, 2))
+        ranking = list(repository.get_ranking_aggregates(date(2026, 1, 1), date(2026, 1, 2), None, 3))
+        assert overview["report_row_count"] == 7
+        assert overview["report_day_count"] == 2
+        assert overview["employee_count"] == 5
+        assert overview["actual_seconds"] == 280
+        assert overview["scheduled_seconds"] == 600
+        assert len(trend) == 2
+        assert [row["report_row_count"] for row in trend] == [6, 1]
+        assert [row["employee_count"] for row in trend] == [5, 1]
+        assert sum(row["actual_seconds"] for row in trend) == 280
+        assert len(ranking) == 3
+        assert all(row["org_id"] is not None for row in ranking)
+        all_ranking = list(repository.get_ranking_aggregates(
+            date(2026, 1, 1), date(2026, 1, 2), None, 100
+        ))
+        identities = {(row["org_id"], row["identity_source"], row["employee_key"]) for row in all_ranking}
+        assert len(identities) == 5
+        assert ("A", "person_id", "123") in identities
+        assert ("B", "person_id", "123") in identities
+        assert ("A", "person_no", "123") in identities
+        assert ("B", "person_no", "123") in identities
+        assert ("A", "person_no", "W") in identities
+        scoped = next(row for row in all_ranking if row["org_id"] == "A" and row["identity_source"] == "person_id")
+        assert scoped["actual_seconds"] == 30
+        assert scoped["report_day_count"] == 2
+        assert scoped["person_name"] == "Alpha"
+        assert scoped["department_name"] == "Alpha Dept"
+        assert repository.get_overview_aggregate(date(2026, 1, 1), date(2026, 1, 2), "B")["employee_count"] == 2
     finally:
         db.dispose_luna_engine()
 
@@ -251,14 +373,21 @@ def test_safe_503_hides_configuration_and_query_failure_details(monkeypatch, fai
     assert "secret" not in response.text
 
 
-def test_user_without_permission_is_forbidden(monkeypatch):
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/dashboard/overview", "/dashboard/work-hours/trend",
+        "/dashboard/work-hours/ranking", "/dashboard/attendance-exceptions",
+    ],
+)
+def test_every_route_without_analytics_permission_is_forbidden(path):
     app = FastAPI()
     app.include_router(dashboard_router)
     guard = dashboard_router.routes[0].dependencies[0].dependency
     def denied():
         raise HTTPException(status_code=403, detail="Missing required permission: analytics:read")
     app.dependency_overrides[guard] = denied
-    assert TestClient(app).get("/dashboard/overview").status_code == 403
+    assert TestClient(app).get(path).status_code == 403
 
 
 def test_exact_analytics_permission_succeeds_independent_of_role_name(monkeypatch):
@@ -274,3 +403,20 @@ def test_exact_analytics_permission_succeeds_independent_of_role_name(monkeypatc
     guard = dashboard_router.routes[0].dependencies[0].dependency
     assert guard(current_user=User(), db=object()) is not None
     assert PermissionCode.ANALYTICS_READ.value == "analytics:read"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/dashboard/overview", "/dashboard/work-hours/trend",
+        "/dashboard/work-hours/ranking", "/dashboard/attendance-exceptions",
+    ],
+)
+def test_every_route_succeeds_with_permission_guard(path, monkeypatch):
+    _stub_range(monkeypatch, [])
+    monkeypatch.setattr(repository, "get_exceptions", lambda *args: [])
+    app = FastAPI()
+    app.include_router(dashboard_router)
+    guard = dashboard_router.routes[0].dependencies[0].dependency
+    app.dependency_overrides[guard] = lambda: object()
+    assert TestClient(app).get(path).status_code == 200
