@@ -164,7 +164,7 @@
       "effectiveRange": "الفترة الفعلية",
       "latestSource": "أحدث تقرير",
       "actions": { "apply": "تطبيق عوامل التصفية", "reset": "إعادة تعيين", "refresh": "تحديث", "retry": "إعادة المحاولة", "previous": "السابق", "next": "التالي" },
-        "filters": { "title": "عوامل تصفية لوحة المعلومات", "start": "تاريخ البدء", "end": "تاريخ الانتهاء", "organization": "الجهة", "allOrganizations": "الكل", "organizationsLoading": "جارٍ تحميل الجهات…", "organizationsUnavailable": "الجهات غير متاحة؛ سيظل خيار الكل محددًا." },
+        "filters": { "title": "عوامل تصفية لوحة المعلومات", "start": "تاريخ البدء", "end": "تاريخ الانتهاء", "organization": "الجهة", "allOrganizations": "الكل", "organizationsLoading": "جارٍ تحميل الجهات…", "organizationsUnavailable": "خيارات الجهات غير متاحة؛ سيظل الاختيار الحالي محفوظًا." },
         "validation": { "dateRange": "يجب أن يكون تاريخ البدء في تاريخ الانتهاء أو قبله." },
       "states": { "loading": "جارٍ تحميل تحليلات الحضور", "empty": "لا توجد تحليلات حضور مطابقة لعوامل التصفية.", "unavailable": "تحليلات الحضور غير متاحة مؤقتاً.", "error": "تعذر تحميل هذا القسم من لوحة المعلومات." },
       "units": { "day": "يوم", "hour": "ساعة", "minute": "دقيقة", "zero": "٠ دقيقة" },

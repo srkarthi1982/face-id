@@ -365,6 +365,62 @@ def test_organizations_empty_and_repository_execution_is_bounded(monkeypatch):
     assert len(calls) == 1
     compiled = str(calls[0].compile(dialect=postgresql.dialect())).lower()
     assert "saas_ca_clock_record" not in compiled
+    assert compiled.count("select distinct") == 4
+
+
+def test_padded_organizations_are_canonical_across_analytics_and_enrichment(monkeypatch):
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS dbo")
+        for table in (saas_ca_person, saas_ca_report_daily, saas_ca_report_exception):
+            table.create(connection)
+        seed = build_seed_rows()
+        daily_base = seed["daily"][0]
+        connection.execute(insert(saas_ca_report_daily), [
+            dict(daily_base, id=1, org_id="ORG-A", person_id="P1", report_date=date(2026, 1, 1), real_work_time=10),
+            dict(daily_base, id=2, org_id=" ORG-A", person_id="P1", report_date=date(2026, 1, 2), real_work_time=20),
+            dict(daily_base, id=3, org_id="ORG-A ", person_id="P1", report_date=date(2026, 1, 3), real_work_time=30),
+            dict(daily_base, id=4, org_id="   ", person_id="BLANK", report_date=date(2026, 1, 3)),
+        ])
+        connection.execute(insert(saas_ca_person), [
+            dict(seed["persons"][0], id=10, org_id=" ORG-A ", person_id="P1", person_no="ENRICHED"),
+            dict(seed["persons"][1], id=11, org_id="DELETED", del_status=1),
+        ])
+        connection.execute(insert(saas_ca_report_exception), [
+            dict(seed["exceptions"][0], id=20, org_id="ORG-A ", person_id="P1", report_date=date(2026, 1, 2)),
+        ])
+    monkeypatch.setattr(db, "_engine", engine)
+    try:
+        assert [item.org_id for item in service.get_organizations()] == ["ORG-A"]
+        overview = service.get_overview(date(2026, 1, 1), date(2026, 1, 3), " ORG-A ", 3660)
+        assert overview.org_id == "ORG-A"
+        assert overview.report_row_count == 3
+        assert overview.employee_count == 1
+        trend = service.get_trend(
+            date(2026, 1, 1), date(2026, 1, 3), "ORG-A", DashboardTrendGranularity.WEEK, 3660
+        )
+        assert sum(point.report_row_count for point in trend.points) == 3
+        assert trend.points[0].employee_count == 1
+        ranking = service.get_ranking(date(2026, 1, 1), date(2026, 1, 3), "ORG-A", 10, 3660)
+        assert len(ranking.items) == 1
+        assert ranking.items[0].org_id == "ORG-A"
+        assert ranking.items[0].actual_seconds == 60
+        exceptions, meta = service.get_attendance_exceptions(
+            date(2026, 1, 1), date(2026, 1, 3), "ORG-A", 1, 20, 3660
+        )
+        assert meta.total == 1
+        assert exceptions[0].org_id == "ORG-A"
+        assert exceptions[0].person_no == "ENRICHED"
+    finally:
+        db.dispose_luna_engine()
+
+
+def test_whitespace_only_requested_org_behaves_as_unfiltered(monkeypatch):
+    captured = []
+    monkeypatch.setattr(repository, "get_latest_report_date", lambda org_id=None: captured.append(org_id) or date(2026, 1, 1))
+    resolved = service.resolve_range(None, None, "   ", 3660)
+    assert captured == [None]
+    assert resolved.org_id is None
 
 
 def test_bounded_aggregates_and_namespace_safe_identity(monkeypatch):

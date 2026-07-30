@@ -69,9 +69,13 @@ person-row ID is selected. The runtime analytics API does not query
 `dbo.saas_ca_clock_record`.
 
 Organization options are read-only IDs because the supplied Luna contract has
-no organization-name table. The organizations query trims IDs, excludes blanks
-and deleted rows, and performs one bounded union across the three approved
-sources. Selecting `ALL` in the frontend means no `org_id` query parameter.
+no organization-name table. A trimmed ID is the canonical organization
+identity; null, empty, and whitespace-only IDs mean no organization. Every
+filter, grouping, response, and exception-person join uses that rule without
+case-folding. The options query excludes blanks and deleted rows, deduplicates
+each of the three approved sources before one bounded union, then globally
+deduplicates and sorts the result. Selecting `ALL` in the frontend means no
+`org_id` query parameter.
 
 Analytics queries aggregate in Luna SQL before returning results to the
 application: overview is constant-sized, trend returns at most one totals row

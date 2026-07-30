@@ -132,22 +132,34 @@ test('ranking limit reloads ranking only and preserves applied filters', async (
   expect(titleBox && rowsBox && Math.abs(titleBox.y - rowsBox.y) < 16).toBeTruthy()
 })
 
-test('organization failure keeps ALL usable and refresh responses are stale-safe', async ({ page }) => {
+test('organization refresh preserves a truthful selected fallback and ALL omits org_id', async ({ page }) => {
   await mockApp(page); await page.unroute('**/api/v1/dashboard/**')
   let organizationCalls = 0
+  const analyticsRequests: URL[] = []
   await page.route('**/api/v1/dashboard/**', async (route) => {
-    if (new URL(route.request().url()).pathname.endsWith('/organizations')) {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/organizations')) {
       organizationCalls += 1
-      if (organizationCalls === 1) return route.fulfill({ status: 503, json: { detail: 'Attendance analytics are temporarily unavailable' } })
-      if (organizationCalls === 2) { await new Promise((resolve) => setTimeout(resolve, 350)); return route.fulfill({ json: { success: true, data: [{ org_id: 'STALE' }] } }) }
-      return route.fulfill({ json: { success: true, data: [{ org_id: 'CURRENT' }] } })
+      if (organizationCalls === 1) return route.fulfill({ json: { success: true, data: [{ org_id: 'ORG-1' }, { org_id: 'ORG-2' }] } })
+      if (organizationCalls === 2) return route.fulfill({ status: 503, json: { detail: 'Attendance analytics are temporarily unavailable' } })
+      return route.fulfill({ json: { success: true, data: [{ org_id: 'ORG-2' }] } })
     }
+    analyticsRequests.push(url)
     return respond(route, 'available')
   })
   await page.goto('/dashboard'); const select = page.getByTestId('dashboard-org')
-  await expect(page.getByText('Organizations are unavailable; ALL remains selected.')).toBeVisible(); await expect(select).toHaveValue(''); await expect(select.locator('option')).toHaveText(['ALL'])
-  await page.getByRole('button', { name: 'Refresh' }).click(); await page.getByRole('button', { name: 'Refresh' }).click()
-  await expect(select.locator('option')).toHaveText(['ALL', 'CURRENT']); await page.waitForTimeout(400); await expect(select.locator('option')).toHaveText(['ALL', 'CURRENT'])
+  await expect(select.locator('option')).toHaveText(['ALL', 'ORG-1', 'ORG-2'])
+  await select.selectOption('ORG-1'); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await expect.poll(() => analyticsRequests.filter((url) => url.searchParams.get('org_id') === 'ORG-1').length).toBe(4)
+  await page.getByRole('button', { name: 'Refresh' }).click()
+  await expect(page.getByText('Organization options are unavailable; the current selection is preserved.')).toBeVisible()
+  await expect(select).toHaveValue('ORG-1'); await expect(select.locator('option')).toHaveText(['ALL', 'ORG-1'])
+  analyticsRequests.length = 0; await page.getByRole('button', { name: 'Apply filters' }).click()
+  await expect.poll(() => analyticsRequests.length).toBe(4); expect(analyticsRequests.every((url) => url.searchParams.get('org_id') === 'ORG-1')).toBeTruthy()
+  await page.getByRole('button', { name: 'Refresh' }).click()
+  await expect(select).toHaveValue('ORG-1'); await expect(select.locator('option')).toHaveText(['ALL', 'ORG-1', 'ORG-2'])
+  analyticsRequests.length = 0; await select.selectOption(''); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await expect.poll(() => analyticsRequests.length).toBe(4); expect(analyticsRequests.every((url) => !url.searchParams.has('org_id'))).toBeTruthy()
 })
 
 test('invalid date ranges are localized and issue no dashboard requests', async ({ page }) => {

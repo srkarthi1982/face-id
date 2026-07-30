@@ -21,16 +21,21 @@ _DURATION_AGGREGATES = {
 }
 
 
+def _normalized_org(column):
+    """Canonical Luna organization identity: trimmed, with blanks treated as null."""
+    return func.nullif(func.trim(column), "")
+
+
 def organizations_statement() -> Select[Any]:
     """Return one bounded, cross-dialect query for active Luna organization IDs."""
     sources = []
     for table in (saas_ca_report_daily, saas_ca_report_exception, saas_ca_person):
-        normalized = func.nullif(func.trim(table.c.org_id), "")
+        normalized = _normalized_org(table.c.org_id)
         sources.append(
             select(normalized.label("org_id")).where(
                 table.c.del_status == ACTIVE_DEL_STATUS,
                 normalized.is_not(None),
-            )
+            ).distinct()
         )
     combined = union_all(*sources).subquery("active_organization_sources")
     return select(combined.c.org_id).distinct().order_by(combined.c.org_id)
@@ -55,7 +60,7 @@ def _daily_predicates(start_date: date, end_date: date, org_id: str | None):
         saas_ca_report_daily.c.report_date <= end_date,
     ]
     if org_id is not None:
-        predicates.append(saas_ca_report_daily.c.org_id == org_id)
+        predicates.append(_normalized_org(saas_ca_report_daily.c.org_id) == org_id)
     return predicates
 
 
@@ -69,7 +74,7 @@ def _sum_columns():
 def latest_report_date_statement(org_id: str | None = None) -> Select[Any]:
     predicates = [saas_ca_report_daily.c.del_status == ACTIVE_DEL_STATUS]
     if org_id is not None:
-        predicates.append(saas_ca_report_daily.c.org_id == org_id)
+        predicates.append(_normalized_org(saas_ca_report_daily.c.org_id) == org_id)
     return select(func.max(saas_ca_report_daily.c.report_date).label("latest")).where(*predicates)
 
 
@@ -91,9 +96,9 @@ def scoped_identity_count_statement(
 ) -> Select[Any]:
     _person_id, _person_no, source, value = _normalized_identity_columns()
     identities = (
-        select(saas_ca_report_daily.c.org_id, source.label("identity_source"), value.label("identity_value"))
+        select(_normalized_org(saas_ca_report_daily.c.org_id).label("org_id"), source.label("identity_source"), value.label("identity_value"))
         .where(*_daily_predicates(start_date, end_date, org_id), value.is_not(None))
-        .group_by(saas_ca_report_daily.c.org_id, source, value)
+        .group_by(_normalized_org(saas_ca_report_daily.c.org_id), source, value)
         .subquery("scoped_identities")
     )
     return select(func.count().label("employee_count")).select_from(identities)
@@ -126,12 +131,12 @@ def trend_date_identity_counts_statement(
     identities = (
         select(
             saas_ca_report_daily.c.report_date,
-            saas_ca_report_daily.c.org_id,
+            _normalized_org(saas_ca_report_daily.c.org_id).label("org_id"),
             source.label("identity_source"),
             value.label("identity_value"),
         )
         .where(*_daily_predicates(start_date, end_date, org_id), value.is_not(None))
-        .group_by(saas_ca_report_daily.c.report_date, saas_ca_report_daily.c.org_id, source, value)
+        .group_by(saas_ca_report_daily.c.report_date, _normalized_org(saas_ca_report_daily.c.org_id), source, value)
         .subquery("date_identities")
     )
     return (
@@ -161,12 +166,12 @@ def trend_period_identity_counts_statement(
         _person_id, _person_no, source, value = _normalized_identity_columns()
         identities = (
             select(
-                saas_ca_report_daily.c.org_id,
+                _normalized_org(saas_ca_report_daily.c.org_id).label("org_id"),
                 source.label("identity_source"),
                 value.label("identity_value"),
             )
             .where(*_daily_predicates(period_start, period_end, org_id), value.is_not(None))
-            .group_by(saas_ca_report_daily.c.org_id, source, value)
+            .group_by(_normalized_org(saas_ca_report_daily.c.org_id), source, value)
             .subquery(f"period_identities_{index}")
         )
         period_selects.append(
@@ -199,7 +204,7 @@ def ranking_statement(
     selected_person_id = case((source == literal("person_id"), value), else_=None)
     statement = (
         select(
-            saas_ca_report_daily.c.org_id,
+            _normalized_org(saas_ca_report_daily.c.org_id).label("org_id"),
             source.label("identity_source"),
             value.label("employee_key"),
             selected_person_id.label("person_id"),
@@ -210,14 +215,14 @@ def ranking_statement(
             *_sum_columns(),
         )
         .where(*_daily_predicates(start_date, end_date, org_id), value.is_not(None))
-        .group_by(saas_ca_report_daily.c.org_id, source, value)
+        .group_by(_normalized_org(saas_ca_report_daily.c.org_id), source, value)
         .order_by(
             actual_total.desc(),
             case((display_person_no.is_(None), 1), else_=0),
             display_person_no,
             case((selected_person_id.is_(None), 1), else_=0),
             selected_person_id,
-            saas_ca_report_daily.c.org_id,
+            _normalized_org(saas_ca_report_daily.c.org_id),
             source,
             value,
         )
@@ -237,7 +242,7 @@ def exception_count_statement(start_date: date, end_date: date, org_id: str | No
         saas_ca_report_exception.c.report_date <= end_date,
     ]
     if org_id is not None:
-        predicates.append(saas_ca_report_exception.c.org_id == org_id)
+        predicates.append(_normalized_org(saas_ca_report_exception.c.org_id) == org_id)
     return select(func.count().label("total")).select_from(saas_ca_report_exception).where(*predicates)
 
 
@@ -251,11 +256,11 @@ def exceptions_statement(
 ) -> Select[Any]:
     active_person_ids = (
         select(
-            saas_ca_person.c.org_id.label("org_id"), saas_ca_person.c.person_id.label("person_id"),
+            _normalized_org(saas_ca_person.c.org_id).label("org_id"), saas_ca_person.c.person_id.label("person_id"),
             func.min(saas_ca_person.c.id).label("person_row_id"),
         )
         .where(saas_ca_person.c.del_status == ACTIVE_DEL_STATUS)
-        .group_by(saas_ca_person.c.org_id, saas_ca_person.c.person_id)
+        .group_by(_normalized_org(saas_ca_person.c.org_id), saas_ca_person.c.person_id)
         .subquery("active_person_ids")
     )
     person = saas_ca_person.alias("exception_person")
@@ -265,10 +270,10 @@ def exceptions_statement(
         saas_ca_report_exception.c.report_date <= end_date,
     ]
     if org_id is not None:
-        predicates.append(saas_ca_report_exception.c.org_id == org_id)
+        predicates.append(_normalized_org(saas_ca_report_exception.c.org_id) == org_id)
     return (
         select(
-            saas_ca_report_exception.c.id, saas_ca_report_exception.c.org_id,
+            saas_ca_report_exception.c.id, _normalized_org(saas_ca_report_exception.c.org_id).label("org_id"),
             saas_ca_report_exception.c.person_id, person.c.person_no, person.c.person_name,
             saas_ca_report_exception.c.report_date, saas_ca_report_exception.c.clock_time,
             saas_ca_report_exception.c.device_key, saas_ca_report_exception.c.device_name,
@@ -276,7 +281,7 @@ def exceptions_statement(
         .select_from(
             saas_ca_report_exception.outerjoin(
                 active_person_ids,
-                and_(active_person_ids.c.org_id == saas_ca_report_exception.c.org_id,
+                and_(active_person_ids.c.org_id == _normalized_org(saas_ca_report_exception.c.org_id),
                      active_person_ids.c.person_id == saas_ca_report_exception.c.person_id),
             ).outerjoin(person, person.c.id == active_person_ids.c.person_row_id)
         )
