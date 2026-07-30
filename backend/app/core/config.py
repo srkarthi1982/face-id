@@ -10,6 +10,9 @@ _DEFAULT_SECRET = "change-me-to-a-random-secret-key"
 
 class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/academic_db"
+    # External Luna attendance source. Kept optional so a Luna outage or an
+    # unconfigured development environment cannot block core Face ID startup.
+    LUNA_DATABASE_URL: str | None = None
     SECRET_KEY: str = _DEFAULT_SECRET
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30

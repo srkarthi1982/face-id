@@ -18,3 +18,4 @@ agents/logs
 .npmrc
 AppData/
 backend/private_uploads/
+codex reference/
