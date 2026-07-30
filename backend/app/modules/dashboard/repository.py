@@ -21,6 +21,25 @@ _DURATION_AGGREGATES = {
 }
 
 
+def organizations_statement() -> Select[Any]:
+    """Return one bounded, cross-dialect query for active Luna organization IDs."""
+    sources = []
+    for table in (saas_ca_report_daily, saas_ca_report_exception, saas_ca_person):
+        normalized = func.nullif(func.trim(table.c.org_id), "")
+        sources.append(
+            select(normalized.label("org_id")).where(
+                table.c.del_status == ACTIVE_DEL_STATUS,
+                normalized.is_not(None),
+            )
+        )
+    combined = union_all(*sources).subquery("active_organization_sources")
+    return select(combined.c.org_id).distinct().order_by(combined.c.org_id)
+
+
+def get_organizations():
+    return _execute_luna_select(organizations_statement())
+
+
 def _normalized_identity_columns():
     person_id = func.nullif(func.trim(saas_ca_report_daily.c.person_id), "")
     person_no = func.nullif(func.trim(saas_ca_report_daily.c.person_no), "")

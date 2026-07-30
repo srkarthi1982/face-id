@@ -227,6 +227,22 @@ def test_seed_rows_are_stable_and_have_unique_primary_keys() -> None:
         assert len(ids) == len(set(ids))
 
 
+def test_seed_has_expected_counts_and_recent_generic_exceptions() -> None:
+    rows = build_seed_rows()
+    assert {name: len(values) for name, values in rows.items()} == {
+        "persons": 12, "clocks": 6208, "daily": 3103, "exceptions": 6,
+    }
+    default_start = SEED_END - timedelta(days=29)
+    recent = [row for row in rows["exceptions"] if default_start <= row["report_date"] <= SEED_END]
+    historical = [row for row in rows["exceptions"] if row["report_date"] < default_start]
+    assert [row["report_date"] for row in recent] == [
+        SEED_END - timedelta(days=21), SEED_END - timedelta(days=14), SEED_END - timedelta(days=1),
+    ]
+    assert len(historical) == 3
+    assert all(row["del_status"] == 0 for row in recent)
+    assert all("recent-" in row["clock_photo_id"] for row in recent)
+
+
 def test_seed_contains_no_attendance_after_documented_end_date() -> None:
     rows = build_seed_rows()
     assert max(row["report_date"] for row in rows["daily"]) <= SEED_END

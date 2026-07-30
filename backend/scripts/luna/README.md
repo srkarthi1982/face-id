@@ -35,6 +35,11 @@ unchanged, and skipped-non-synthetic counts for each table. Work duration pairs
 completed active entry/exit sessions, excludes breaks, and partitions every
 daily total into normal plus overtime. Weekend work is overtime only.
 
+The deterministic seed contains six generic exception rows: three historical
+records outside the default dashboard range and three active recent records
+within the final 30 days ending at the fixed seed date. They use synthetic
+employees and devices and do not establish production exception meanings.
+
 When both runtime-role variables are supplied, setup creates the role only when
 it does not already exist, applies no password or role-attribute change to an
 existing role, and grants only the documented read privileges. When they are

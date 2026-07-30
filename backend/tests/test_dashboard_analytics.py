@@ -108,7 +108,7 @@ def test_dashboard_registration_is_router_only_and_lazy(monkeypatch):
     importlib.reload(repository)
     importlib.reload(service)
     assert db._engine is None
-    assert len(dashboard_router.routes) == 4
+    assert len(dashboard_router.routes) == 5
 
 
 def test_runtime_analytics_modules_have_no_primary_session_or_writes():
@@ -120,6 +120,7 @@ def test_runtime_analytics_modules_have_no_primary_session_or_writes():
     assert "insert(" not in combined
     assert "update(" not in combined
     assert "delete(" not in combined
+    assert "text(" not in combined
     assert "saas_ca_clock_record" not in combined
     assert "require_role" not in combined
     assert "PermissionCode.ANALYTICS_READ" in inspect.getsource(router_module)
@@ -131,6 +132,7 @@ def test_runtime_analytics_modules_have_no_primary_session_or_writes():
     "builder,args",
     [
         (repository.latest_report_date_statement, ("ORG",)),
+        (repository.organizations_statement, ()),
         (repository.overview_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
         (repository.scoped_identity_count_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
         (repository.trend_dates_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG")),
@@ -325,6 +327,46 @@ def test_repository_filters_deleted_and_org_and_enriches_without_duplicates(monk
         db.dispose_luna_engine()
 
 
+def test_organizations_include_all_approved_sources_trim_sort_and_filter(monkeypatch):
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS dbo")
+        for table in (saas_ca_person, saas_ca_report_daily, saas_ca_report_exception):
+            table.create(connection)
+        seed = build_seed_rows()
+        connection.execute(insert(saas_ca_person), [
+            dict(seed["persons"][0], id=1, org_id="  PERSON-Z  "),
+            dict(seed["persons"][1], id=2, org_id="DUPLICATE"),
+            dict(seed["persons"][2], id=3, org_id="DELETED", del_status=1),
+            dict(seed["persons"][3], id=4, org_id="   "),
+            dict(seed["persons"][4], id=5, org_id=None),
+        ])
+        connection.execute(insert(saas_ca_report_daily), [
+            dict(seed["daily"][0], id=10, org_id="DAILY-A"),
+            dict(seed["daily"][1], id=11, org_id=" DUPLICATE "),
+        ])
+        connection.execute(insert(saas_ca_report_exception), [
+            dict(seed["exceptions"][0], id=20, org_id="EXCEPTION-M"),
+            dict(seed["exceptions"][1], id=21, org_id="DELETED-EXCEPTION", del_status=1),
+        ])
+    monkeypatch.setattr(db, "_engine", engine)
+    try:
+        assert [item.org_id for item in service.get_organizations()] == [
+            "DAILY-A", "DUPLICATE", "EXCEPTION-M", "PERSON-Z",
+        ]
+    finally:
+        db.dispose_luna_engine()
+
+
+def test_organizations_empty_and_repository_execution_is_bounded(monkeypatch):
+    calls = []
+    monkeypatch.setattr(repository, "_execute_luna_select", lambda statement: calls.append(statement) or [])
+    assert service.get_organizations() == []
+    assert len(calls) == 1
+    compiled = str(calls[0].compile(dialect=postgresql.dialect())).lower()
+    assert "saas_ca_clock_record" not in compiled
+
+
 def test_bounded_aggregates_and_namespace_safe_identity(monkeypatch):
     engine = create_engine("sqlite://")
     with engine.begin() as connection:
@@ -393,6 +435,7 @@ def test_bounded_aggregates_and_namespace_safe_identity(monkeypatch):
 @pytest.mark.parametrize(
     "path",
     [
+        "/dashboard/organizations",
         "/dashboard/overview",
         "/dashboard/work-hours/trend",
         "/dashboard/work-hours/ranking",
@@ -441,9 +484,21 @@ def test_safe_503_hides_configuration_and_query_failure_details(monkeypatch, fai
     assert "secret" not in response.text
 
 
+def test_organizations_failure_returns_sanitized_503(monkeypatch):
+    app = FastAPI(); app.include_router(dashboard_router)
+    guard = dashboard_router.routes[0].dependencies[0].dependency
+    app.dependency_overrides[guard] = lambda: object()
+    monkeypatch.setattr(service, "get_organizations", lambda: (_ for _ in ()).throw(db.LunaUnavailableError("sql secret")))
+    response = TestClient(app).get("/dashboard/organizations")
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Attendance analytics are temporarily unavailable"}
+    assert "secret" not in response.text
+
+
 @pytest.mark.parametrize(
     "path",
     [
+        "/dashboard/organizations",
         "/dashboard/overview", "/dashboard/work-hours/trend",
         "/dashboard/work-hours/ranking", "/dashboard/attendance-exceptions",
     ],
@@ -476,12 +531,14 @@ def test_exact_analytics_permission_succeeds_independent_of_role_name(monkeypatc
 @pytest.mark.parametrize(
     "path",
     [
+        "/dashboard/organizations",
         "/dashboard/overview", "/dashboard/work-hours/trend",
         "/dashboard/work-hours/ranking", "/dashboard/attendance-exceptions",
     ],
 )
 def test_every_route_succeeds_with_permission_guard(path, monkeypatch):
     _stub_range(monkeypatch, [])
+    monkeypatch.setattr(repository, "get_organizations", lambda: [])
     monkeypatch.setattr(repository, "get_exceptions", lambda *args: [])
     app = FastAPI()
     app.include_router(dashboard_router)

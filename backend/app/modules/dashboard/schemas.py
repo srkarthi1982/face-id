@@ -19,6 +19,10 @@ class DashboardTrendGranularity(str, Enum):
     YEAR = "year"
 
 
+class DashboardOrganizationOption(BaseModel):
+    org_id: str
+
+
 class DashboardDateRange(BaseModel):
     effective_start_date: date | None
     effective_end_date: date | None

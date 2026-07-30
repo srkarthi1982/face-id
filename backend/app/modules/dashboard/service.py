@@ -16,12 +16,17 @@ from .schemas import (
     AttendanceExceptionItem,
     DashboardDataStatus,
     DashboardOverview,
+    DashboardOrganizationOption,
     DashboardTrend,
     DashboardTrendGranularity,
     DashboardTrendPoint,
     EmployeeWorkHoursRanking,
     EmployeeWorkHoursRankingItem,
 )
+
+
+def get_organizations() -> list[DashboardOrganizationOption]:
+    return [DashboardOrganizationOption(org_id=row["org_id"]) for row in repository.get_organizations()]
 
 
 class DashboardRangeError(ValueError):
