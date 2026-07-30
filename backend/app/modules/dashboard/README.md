@@ -77,6 +77,12 @@ each of the three approved sources before one bounded union, then globally
 deduplicates and sorts the result. Selecting `ALL` in the frontend means no
 `org_id` query parameter.
 
+An explicit end date controls the effective range even when an organization has
+no daily reports, allowing exception-only organizations to return exception
+data. The daily-report latest date remains nullable response metadata in that
+case. Without an explicit end date, a scoped daily latest date is still required
+to derive the range.
+
 Analytics queries aggregate in Luna SQL before returning results to the
 application: overview is constant-sized, trend returns at most one totals row
 per exact report date, and ranking returns at most the requested limit. The

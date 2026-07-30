@@ -69,9 +69,12 @@ def resolve_range(
         if (end_date - start_date).days + 1 > max_days:
             raise DashboardRangeError(f"Date range exceeds the {max_days}-day limit")
     latest = repository.get_latest_report_date(org_id)
-    if latest is None:
+    if end_date is not None:
+        effective_end = end_date
+    elif latest is not None:
+        effective_end = latest
+    else:
         return EffectiveRange(None, None, None, org_id)
-    effective_end = end_date or latest
     effective_start = start_date or (effective_end - timedelta(days=DEFAULT_RANGE_DAYS - 1))
     if effective_start > effective_end:
         raise DashboardRangeError("start_date must not be after end_date")
@@ -106,7 +109,11 @@ def get_overview(start_date, end_date, org_id, max_days: int) -> DashboardOvervi
     report_row_count = int(aggregate["report_row_count"]) if aggregate else 0
     return DashboardOverview(
         **_range_fields(resolved),
-        data_status=DashboardDataStatus.AVAILABLE if report_row_count else DashboardDataStatus.EMPTY,
+        data_status=(
+            DashboardDataStatus.AVAILABLE
+            if report_row_count or exception_count
+            else DashboardDataStatus.EMPTY
+        ),
         duration_unit=DURATION_UNIT,
         report_row_count=report_row_count,
         report_day_count=int(aggregate["report_day_count"]) if aggregate else 0,

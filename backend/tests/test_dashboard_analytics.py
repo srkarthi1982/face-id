@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, insert
 from sqlalchemy.dialects import mssql, postgresql
+from sqlalchemy.pool import StaticPool
 
 from app.core.permissions import PermissionCode
 from app.core import deps
@@ -174,7 +175,9 @@ def test_empty_source_has_null_effective_dates_and_zero_totals(monkeypatch):
     _stub_range(monkeypatch, [], latest=None)
     result = service.get_overview(date(2020, 1, 1), date(2020, 1, 2), None, 3660)
     assert result.data_status.value == "empty"
-    assert result.effective_start_date is None
+    assert result.effective_start_date == date(2020, 1, 1)
+    assert result.effective_end_date == date(2020, 1, 2)
+    assert result.source_latest_report_date is None
     assert result.actual_seconds == 0
 
 
@@ -421,6 +424,91 @@ def test_whitespace_only_requested_org_behaves_as_unfiltered(monkeypatch):
     resolved = service.resolve_range(None, None, "   ", 3660)
     assert captured == [None]
     assert resolved.org_id is None
+
+
+def test_exception_only_organization_honors_explicit_ranges_in_service_and_http(monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    exception_day = date(2026, 4, 15)
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS dbo")
+        for table in (saas_ca_person, saas_ca_report_daily, saas_ca_report_exception):
+            table.create(connection)
+        seed = build_seed_rows()
+        connection.execute(insert(saas_ca_person), [
+            dict(seed["persons"][0], id=100, org_id=" EXCEPT-ONLY ", person_id="PX", person_no="E-ONLY"),
+        ])
+        connection.execute(insert(saas_ca_report_exception), [
+            dict(seed["exceptions"][0], id=200, org_id="EXCEPT-ONLY ", person_id="PX", report_date=exception_day),
+        ])
+    monkeypatch.setattr(db, "_engine", engine)
+    app = FastAPI()
+    app.include_router(dashboard_router)
+    guard = dashboard_router.routes[0].dependencies[0].dependency
+    app.dependency_overrides[guard] = lambda: object()
+    client = TestClient(app)
+    params = {"start_date": "2026-04-01", "end_date": "2026-04-30", "org_id": " EXCEPT-ONLY "}
+    try:
+        assert [item.org_id for item in service.get_organizations()] == ["EXCEPT-ONLY"]
+        overview = service.get_overview(date(2026, 4, 1), date(2026, 4, 30), " EXCEPT-ONLY ", 3660)
+        assert overview.effective_start_date == date(2026, 4, 1)
+        assert overview.effective_end_date == date(2026, 4, 30)
+        assert overview.source_latest_report_date is None
+        assert overview.org_id == "EXCEPT-ONLY"
+        assert overview.report_row_count == 0
+        assert overview.report_day_count == 0
+        assert overview.employee_count == 0
+        assert overview.actual_seconds == 0
+        assert overview.reported_exception_count == 1
+        assert overview.data_status.value == "available"
+
+        items, meta = service.get_attendance_exceptions(
+            date(2026, 4, 1), date(2026, 4, 30), "EXCEPT-ONLY", 1, 20, 3660
+        )
+        assert meta.total == 1
+        assert items[0].org_id == "EXCEPT-ONLY"
+        assert items[0].person_no == "E-ONLY"
+
+        end_only = service.resolve_range(None, date(2026, 4, 30), "EXCEPT-ONLY", 3660)
+        assert end_only.start == date(2026, 4, 1)
+        assert end_only.end == date(2026, 4, 30)
+        assert end_only.latest is None
+        no_end = service.resolve_range(None, None, "EXCEPT-ONLY", 3660)
+        assert no_end.start is None and no_end.end is None and no_end.latest is None
+        empty = service.get_overview(date(2026, 4, 1), date(2026, 4, 30), "EMPTY", 3660)
+        assert empty.data_status.value == "empty"
+
+        organizations_response = client.get("/dashboard/organizations")
+        assert organizations_response.status_code == 200
+        assert organizations_response.json()["data"] == [{"org_id": "EXCEPT-ONLY"}]
+        overview_response = client.get("/dashboard/overview", params=params)
+        assert overview_response.status_code == 200
+        overview_data = overview_response.json()["data"]
+        assert overview_data["effective_start_date"] == "2026-04-01"
+        assert overview_data["effective_end_date"] == "2026-04-30"
+        assert overview_data["source_latest_report_date"] is None
+        assert overview_data["reported_exception_count"] == 1
+        assert overview_data["data_status"] == "available"
+        exceptions_response = client.get("/dashboard/attendance-exceptions", params=params)
+        assert exceptions_response.status_code == 200
+        assert exceptions_response.json()["data"][0]["person_no"] == "E-ONLY"
+        trend_response = client.get(
+            "/dashboard/work-hours/trend", params={**params, "granularity": "day"}
+        )
+        assert trend_response.status_code == 200
+        assert trend_response.json()["data"]["effective_start_date"] == "2026-04-01"
+        assert trend_response.json()["data"]["points"] == []
+        ranking_response = client.get(
+            "/dashboard/work-hours/ranking", params={**params, "limit": 10}
+        )
+        assert ranking_response.status_code == 200
+        assert ranking_response.json()["data"]["effective_end_date"] == "2026-04-30"
+        assert ranking_response.json()["data"]["items"] == []
+    finally:
+        db.dispose_luna_engine()
 
 
 def test_bounded_aggregates_and_namespace_safe_identity(monkeypatch):
