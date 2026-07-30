@@ -19,13 +19,16 @@ MODULE_NAMES = [
     "person_mapping",# Device-person mapping
     "recognition_records", # Recognition records
     "callbacks",     # Callback configurations
+    "dashboard",     # External Luna analytics endpoints; no primary ORM models
     "audit",         # AuditLog → User — must be last
 ]
 
 # Modules that expose SQLAlchemy models via a `models` submodule. The auth and
 # access modules have no DB models of their own, so they're omitted from
 # metadata import.
-_MODEL_MODULES = [name for name in MODULE_NAMES if name not in ("auth", "access")]
+_MODEL_MODULES = [
+    name for name in MODULE_NAMES if name not in ("auth", "access", "dashboard")
+]
 
 
 def create_api_router() -> APIRouter:

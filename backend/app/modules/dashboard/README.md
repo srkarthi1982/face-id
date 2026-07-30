@@ -45,3 +45,47 @@ Future reporting sources:
 Local simulation duration fields are stored in seconds. Seed values provisionally
 map `clock_type=1` to entry and `clock_type=2` to exit. Both assumptions require
 validation against real Luna values before production integration.
+
+## Read-only analytics APIs
+
+All routes are under `/api/v1/dashboard` and require exactly
+`analytics:read` through the standard permission dependency:
+
+- `GET /overview` returns source status, effective dates, row/day/employee
+  counts, reported-exception count, and official duration totals.
+- `GET /work-hours/trend` returns day, ISO-week, calendar-month, or
+  calendar-year duration buckets.
+- `GET /work-hours/ranking` ranks employees by official actual seconds.
+- `GET /attendance-exceptions` returns stable, paginated, generic reported
+  exceptions with optional Luna person enrichment.
+
+Official duration metrics come only from `dbo.saas_ca_report_daily` and remain
+integer seconds. Reported exception counts and records come only from
+`dbo.saas_ca_report_exception`. `dbo.saas_ca_person` is used only for
+deterministic exception enrichment; when duplicates exist, the lowest active
+person-row ID is selected. The runtime analytics API does not query
+`dbo.saas_ca_clock_record`.
+
+When dates are omitted, the effective end date is the latest active daily
+report date for the optional organization, and the start is 29 calendar days
+earlier (a 30-day inclusive window). A reachable source without daily reports
+returns explicit empty HTTP 200 responses and never substitutes the current
+server date. Maximum inclusive ranges are 3,660 days for overview, ranking,
+exceptions, month trend, and year trend; 1,096 days for week trend; and 366
+days for day trend.
+
+ISO weeks begin Monday and end Sunday. Trend period boundaries are clipped to
+the effective request range. Week/month/year bucketing occurs in Python so the
+business queries remain portable between PostgreSQL and Microsoft SQL Server.
+
+Every query assumes vendor `del_status=0` means active. That semantic remains
+production validation work. Exception output deliberately says only
+"attendance exception" or "reported exception" because no confirmed reason
+field exists. Missing-entry, missing-exit, and unmatched entry/exit diagnostics
+are not implemented. Raw-clock pairing, `clock_type` interpretation, punch
+timezone handling, and raw-clock-derived work calculations are not implemented.
+
+The APIs and read-only privileges are validated against the local PostgreSQL
+simulation. Statements are compilation-tested for the MSSQL dialect, but real
+production SQL Server connectivity remains untested pending an approved
+environment and confirmation of vendor field semantics.
