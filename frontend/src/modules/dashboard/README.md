@@ -4,9 +4,9 @@ The dashboard is the authenticated `/dashboard` landing page for read-only Luna 
 
 ## Data flow
 
-`DashboardPage` composes filters, KPIs, the trend chart, employee ranking, attendance exceptions, and shared panel states. It starts one bounded request for each backend dashboard resource: `/api/v1/dashboard/overview`, `/api/v1/dashboard/work-hours/trend`, `/api/v1/dashboard/work-hours/ranking`, and `/api/v1/dashboard/attendance-exceptions`. `store.ts` owns draft and applied filters, independent panel states, retries, request cancellation, and a generation guard that prevents stale responses from replacing newer results. Typing in a filter does not issue requests; Apply promotes the draft and reloads all panels.
+`DashboardPage` composes filters, KPIs, the trend chart, employee ranking, attendance exceptions, and shared panel states. It starts one bounded request for each backend dashboard resource: `/api/v1/dashboard/overview`, `/api/v1/dashboard/work-hours/trend`, `/api/v1/dashboard/work-hours/ranking`, and `/api/v1/dashboard/attendance-exceptions`. `store.ts` owns draft and applied filters, independent panel states, retries, and section-scoped request IDs/controllers that prevent stale responses without interrupting unrelated panels. Typing in a filter does not issue requests; Apply validates and promotes the draft, then reloads all panels.
 
-Trend granularity reloads only the trend. Exception page and page-size controls reload only the exception table. Reset restores the backend defaults and omits optional dates and organization from the query string.
+Trend granularity reloads only the trend, ranking limit reloads only ranking, and exception page/page-size controls reload only exceptions. An inverted date range is rejected locally before requests. Reset clears validation and restores backend defaults, omitting optional dates and organization from the query string.
 
 All requests use the OpenAPI-generated SDK from `src/api/generated`. The initial request omits dates so Luna determines the effective source range, which the page then displays. Durations remain integer seconds in state and are converted only for localized display. The module does not query Luna or raw clocks directly, calculate official work hours, or use polling, server-sent events, or WebSockets.
 
@@ -18,6 +18,7 @@ All requests use the OpenAPI-generated SDK from `src/api/generated`. The initial
 - Each panel has independent loading, empty, unavailable, generic-error, and retry rendering.
 - English/Arabic, LTR/RTL, light/dark themes, and reduced-motion preferences are supported.
 - Exceptions remain deliberately generic: the UI presents no inferred reason and no photo or internal-source field.
+- Luna `report_date` values are formatted as date-only values without timezone conversion. Exception `clock_time` preserves the returned source wall clock; timezone conversion remains intentionally deferred until production Luna timezone semantics are confirmed.
 
 ## Tests
 

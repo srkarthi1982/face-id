@@ -5,8 +5,7 @@ import { formatDuration, formatNumber } from '../utils'
 
 export default function EmployeeRankingTable({ data }: { data: EmployeeWorkHoursRanking }) {
   const { t, lang } = useI18n()
-  const setDraft = useDashboardStore((state) => state.setDraft)
-  const apply = useDashboardStore((state) => state.apply)
+  const setRankingLimit = useDashboardStore((state) => state.setRankingLimit)
   const rankingLimit = useDashboardStore((state) => state.applied.ranking_limit)
   const units = { day: t('nav.dashboard.units.day'), hour: t('nav.dashboard.units.hour'), minute: t('nav.dashboard.units.minute'), zero: t('nav.dashboard.units.zero') }
   const headers = ['rank', 'employee', 'employeeNo', 'organization', 'department', 'reportDays', 'actual', 'overtime', 'late'] as const
@@ -14,7 +13,7 @@ export default function EmployeeRankingTable({ data }: { data: EmployeeWorkHours
   return <>
     <div className="mb-3 flex justify-end">
       <label className="text-sm text-secondary">{t('nav.dashboard.ranking.limit')}
-        <select aria-label={t('nav.dashboard.ranking.limit')} className="ms-2 min-h-10 rounded-lg border border-bd bg-surface-2 px-2" value={rankingLimit} onChange={async (event) => { setDraft({ ranking_limit: Number(event.target.value) }); await apply() }}>
+        <select aria-label={t('nav.dashboard.ranking.limit')} className="ms-2 min-h-10 rounded-lg border border-bd bg-surface-2 px-2" value={rankingLimit} onChange={(event) => void setRankingLimit(Number(event.target.value))}>
           {[5, 10, 20, 50].map((value) => <option key={value}>{value}</option>)}
         </select>
       </label>

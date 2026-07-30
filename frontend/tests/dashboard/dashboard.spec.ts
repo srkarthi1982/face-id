@@ -9,7 +9,7 @@ const missingRankingItem = { ...rankingItem, rank: 2, org_id: 'ORG-2', employee_
 const exception = { id: 1, org_id: 'ORG-1', person_id: 'P-01', person_no: 'E-01', person_name: 'Amina Noor', report_date: '2026-07-30', clock_time: '2026-07-30T08:10:00', device_key: 'D-01', device_name: 'Main Gate' }
 const missingException = { ...exception, id: 2, org_id: 'ORG-2', person_id: null, person_no: null, person_name: null, device_name: null }
 
-type Mode = 'available' | 'empty' | 'partial' | 'unavailable'
+type Mode = 'available' | 'empty' | 'partial' | 'unavailable' | 'invalid'
 
 async function mockApp(page: Page, mode: Mode = 'available') {
   await page.addInitScript(() => {
@@ -26,8 +26,9 @@ async function mockApp(page: Page, mode: Mode = 'available') {
 
 async function respond(route: Route, mode: Mode) {
   const url = new URL(route.request().url()); const path = url.pathname
-  if (mode === 'unavailable') return route.fulfill({ status: 503, json: { error: { code: 'DASHBOARD_UNAVAILABLE', message: 'private detail must not render' } } })
-  if (mode === 'partial' && path.endsWith('/work-hours/trend')) return route.fulfill({ status: 503, json: { error: { code: 'DASHBOARD_UNAVAILABLE' } } })
+  if (mode === 'unavailable') return route.fulfill({ status: 503, json: { detail: 'Attendance analytics are temporarily unavailable' } })
+  if (mode === 'invalid') return route.fulfill({ status: 422, json: { detail: [{ loc: ['query', 'start_date'], msg: 'Invalid range', type: 'value_error' }] } })
+  if (mode === 'partial' && path.endsWith('/work-hours/trend')) return route.fulfill({ status: 503, json: { detail: 'Attendance analytics are temporarily unavailable' } })
   const empty = mode === 'empty'
   if (path.endsWith('/overview')) return route.fulfill({ json: { success: true, data: empty ? { ...overview, data_status: 'empty', report_row_count: 0, report_day_count: 0, employee_count: 0, reported_exception_count: 0 } : overview } })
   if (path.endsWith('/work-hours/trend')) return route.fulfill({ json: { success: true, data: { ...range, granularity: url.searchParams.get('granularity') ?? 'week', points: empty ? [] : [point] } } })
@@ -76,7 +77,11 @@ test('renders independent empty, unavailable, and partial-failure states without
   await page.unroute('**/api/v1/dashboard/**'); await page.route('**/api/v1/dashboard/**', async (route) => respond(route, 'unavailable'))
   await page.getByRole('button', { name: 'Refresh' }).click()
   await expect(page.getByText('Attendance analytics are temporarily unavailable.').first()).toBeVisible()
-  await expect(page.getByText('private detail must not render')).toHaveCount(0)
+  await expect(page.getByText('Attendance analytics are temporarily unavailable', { exact: true })).toHaveCount(0)
+  await page.unroute('**/api/v1/dashboard/**'); await page.route('**/api/v1/dashboard/**', async (route) => respond(route, 'invalid'))
+  await page.getByRole('button', { name: 'Refresh' }).click()
+  await expect(page.getByText('This dashboard section could not be loaded.').first()).toBeVisible()
+  await expect(page.getByText('Invalid range')).toHaveCount(0)
 })
 
 test('supports Arabic RTL, dark theme, and a mobile viewport', async ({ page }) => {
@@ -85,6 +90,67 @@ test('supports Arabic RTL, dark theme, and a mobile viewport', async ({ page }) 
   await page.goto('/dashboard'); await expect(page.getByTestId('attendance-dashboard')).toBeVisible()
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl'); await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
   await expect(page.locator('body')).not.toHaveCSS('overflow-x', 'scroll')
+})
+
+test('section controls do not interrupt unrelated slow requests or leave loading panels', async ({ page }) => {
+  await mockApp(page); await page.unroute('**/api/v1/dashboard/**')
+  const requests: URL[] = []
+  await page.route('**/api/v1/dashboard/**', async (route) => {
+    const url = new URL(route.request().url()); requests.push(url)
+    if (url.pathname.endsWith('/overview') || url.pathname.endsWith('/work-hours/ranking')) await new Promise((resolve) => setTimeout(resolve, 450))
+    return respond(route, 'available')
+  })
+  await page.goto('/dashboard')
+  await page.getByLabel('Trend granularity').selectOption('month'); await page.getByRole('button', { name: 'Next' }).click()
+  await page.getByLabel('Trend granularity').selectOption('day'); await page.getByLabel('Trend granularity').selectOption('week')
+  await expect(page.getByTestId('kpi-employees')).toContainText('7'); await expect(page.getByText('Amina Noor').first()).toBeVisible()
+  await expect(page.getByRole('status')).toHaveCount(0)
+  expect(requests.filter((url) => url.pathname.endsWith('/overview'))).toHaveLength(1)
+  expect(requests.filter((url) => url.pathname.endsWith('/work-hours/ranking'))).toHaveLength(1)
+  expect(requests.filter((url) => url.pathname.endsWith('/work-hours/trend')).length).toBeGreaterThan(1)
+  expect(requests.filter((url) => url.pathname.endsWith('/attendance-exceptions')).length).toBeGreaterThan(1)
+})
+
+test('ranking limit reloads ranking only and preserves applied filters', async ({ page }) => {
+  await mockApp(page); const requests: URL[] = []
+  page.on('request', (request) => { if (request.url().includes('/api/v1/dashboard/')) requests.push(new URL(request.url())) })
+  await page.goto('/dashboard'); await expect(page.getByText('Amina Noor').first()).toBeVisible(); requests.length = 0
+  await page.getByLabel('Organization').fill('UNSAVED-ORG'); await page.getByLabel('Rows', { exact: true }).selectOption('20')
+  await expect.poll(() => requests.length).toBe(1)
+  expect(requests[0].pathname).toContain('/work-hours/ranking'); expect(requests[0].searchParams.get('limit')).toBe('20'); expect(requests[0].searchParams.has('org_id')).toBeFalsy()
+  await expect(page.getByLabel('Organization')).toHaveValue('UNSAVED-ORG'); await expect(page.getByLabel('Rows', { exact: true })).toHaveValue('20')
+})
+
+test('invalid date ranges are localized and issue no dashboard requests', async ({ page }) => {
+  await mockApp(page); const requests: URL[] = []
+  page.on('request', (request) => { if (request.url().includes('/api/v1/dashboard/')) requests.push(new URL(request.url())) })
+  await page.goto('/dashboard'); await expect(page.getByTestId('kpi-employees')).toBeVisible(); requests.length = 0
+  await page.getByLabel('Start date').fill('2026-07-20'); await page.getByLabel('End date').fill('2026-07-10'); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await expect(page.getByText('Start date must be on or before end date.')).toBeVisible(); expect(requests).toHaveLength(0)
+  await expect(page.getByLabel('Start date')).toHaveAttribute('max', '2026-07-10'); await expect(page.getByLabel('End date')).toHaveAttribute('min', '2026-07-20')
+  await page.getByTestId('dashboard-reset').click(); await expect(page.locator('#dashboard-filter-error')).toHaveCount(0)
+  await page.evaluate(() => localStorage.setItem('lang', 'ar')); await page.reload(); await expect(page.getByTestId('attendance-dashboard')).toBeVisible(); requests.length = 0
+  await page.getByTestId('dashboard-start').fill('2026-07-20'); await page.getByTestId('dashboard-end').fill('2026-07-10'); await page.getByTestId('dashboard-apply').click()
+  await expect(page.getByText('يجب أن يكون تاريخ البدء في تاريخ الانتهاء أو قبله.')).toBeVisible(); expect(requests).toHaveLength(0)
+})
+
+test('effective range is hidden while replacement overview loads and after it fails', async ({ page }) => {
+  await mockApp(page); await page.goto('/dashboard'); await expect(page.getByText(/Effective range:/)).toBeVisible()
+  await page.unroute('**/api/v1/dashboard/**'); await page.route('**/api/v1/dashboard/**', async (route) => {
+    if (new URL(route.request().url()).pathname.endsWith('/overview')) { await new Promise((resolve) => setTimeout(resolve, 300)); return respond(route, 'unavailable') }
+    return respond(route, 'available')
+  })
+  await page.getByLabel('Organization').fill('ORG-NEW'); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await expect(page.getByText(/Effective range:/)).toHaveCount(0); await expect(page.getByText('Attendance analytics are temporarily unavailable.')).toBeVisible(); await expect(page.getByText(/Effective range:/)).toHaveCount(0)
+})
+
+test('chart uses live theme variables and exposes the complete accessible summary', async ({ page }) => {
+  await mockApp(page); await page.goto('/dashboard'); const scheduled = page.locator('path[data-series="scheduled"]')
+  await expect(scheduled).toHaveAttribute('stroke', 'var(--text-muted)')
+  const before = await scheduled.evaluate((element) => getComputedStyle(element).stroke)
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+  const after = await scheduled.evaluate((element) => getComputedStyle(element).stroke); expect(after).not.toBe(before)
+  for (const header of ['Period', 'Scheduled work', 'Actual work', 'Overtime', 'Employees']) await expect(page.getByRole('columnheader', { name: header }).last()).toBeAttached()
 })
 
 test('supports the language, theme, viewport, and keyboard acceptance matrix', async ({ page }) => {
@@ -119,4 +185,13 @@ test('a delayed older filter response cannot overwrite newer dashboard state', a
   await expect(page.getByTestId('kpi-employees')).toContainText('99'); await page.waitForTimeout(450)
   await expect(page.getByTestId('kpi-employees')).toContainText('99')
   await expect(page.getByText(/reason|clock_photo_id/i)).toHaveCount(0)
+})
+
+test.describe('Luna calendar and wall-clock values', () => {
+  test.use({ timezoneId: 'America/Los_Angeles' })
+  test('do not shift in a browser timezone west of UTC', async ({ page }) => {
+    await mockApp(page); await page.goto('/dashboard')
+    await expect(page.getByRole('cell', { name: 'Jul 30, 2026' }).first()).toBeVisible()
+    await expect(page.getByRole('cell', { name: '08:10 AM' }).first()).toBeVisible()
+  })
 })
