@@ -194,6 +194,56 @@ test('chart uses live theme variables and exposes the complete accessible summar
   for (const header of ['Period', 'Scheduled work', 'Actual work', 'Overtime', 'Employees']) await expect(page.getByRole('columnheader', { name: header }).last()).toBeAttached()
 })
 
+test('renders four accented primary KPIs separately from six secondary KPIs in LTR and RTL', async ({ page }) => {
+  await mockApp(page); await page.goto('/dashboard')
+  const primary = page.getByTestId('kpi-primary-grid'); const secondary = page.getByTestId('kpi-secondary-grid')
+  await expect(primary.locator('[data-kpi-tier="primary"]')).toHaveCount(4)
+  await expect(secondary.locator('[data-kpi-tier="secondary"]')).toHaveCount(6)
+  await expect(primary.getByTestId('kpi-exceptions')).toBeVisible()
+  await expect(secondary.getByTestId('kpi-scheduled')).toBeVisible()
+  expect(await primary.locator('article').evaluateAll((cards) => cards.every((card) => getComputedStyle(card).borderInlineStartWidth === '4px'))).toBeTruthy()
+  expect(await secondary.locator('article').evaluateAll((cards) => cards.every((card) => getComputedStyle(card).borderInlineStartWidth !== '4px'))).toBeTruthy()
+  await page.evaluate(() => localStorage.setItem('lang', 'ar')); await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('dir', 'rtl')
+  const employeeStyle = await page.getByTestId('kpi-employees').evaluate((card) => {
+    const style = getComputedStyle(card); return { inlineStart: style.borderInlineStartWidth, right: style.borderRightWidth }
+  })
+  expect(employeeStyle).toEqual({ inlineStart: '4px', right: '4px' })
+})
+
+test('trend axis uses clean localized hours, stays visible, and preserves relative plotting', async ({ page }) => {
+  await mockApp(page); await page.unroute('**/api/v1/dashboard/**')
+  const largePoint = { ...point, scheduled_seconds: 1_800_000, actual_seconds: 1_080_000, overtime_seconds: 360_000 }
+  await page.route('**/api/v1/dashboard/**', async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/work-hours/trend')) return route.fulfill({ json: { success: true, data: { ...range, granularity: 'week', points: [largePoint] } } })
+    return respond(route, 'available')
+  })
+  await page.goto('/dashboard')
+  const ticks = page.getByTestId('trend-y-tick'); await expect(ticks.first()).toHaveText('0 h')
+  const labels = await ticks.allTextContents()
+  expect(labels.some((label) => label.includes('500 h'))).toBeTruthy()
+  expect(labels.every((label) => !/\.\d{2,}/.test(label))).toBeTruthy()
+  const svgBox = await page.getByRole('img', { name: 'Work-hours trend' }).boundingBox()
+  const tickBoxes = await ticks.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().toJSON()))
+  expect(svgBox && tickBoxes.every((box) => box.x >= svgBox.x && box.x + box.width <= svgBox.x + svgBox.width)).toBeTruthy()
+  const yFor = async (seriesName: string) => {
+    const path = await page.locator(`path[data-series="${seriesName}"]`).getAttribute('d'); const match = /^M[^,]+,([\d.]+)/.exec(path ?? '')
+    expect(match).toBeTruthy(); return Number(match![1])
+  }
+  const scheduledY = await yFor('scheduled'); const actualY = await yFor('actual'); const overtimeY = await yFor('overtime')
+  expect(scheduledY).toBeLessThan(actualY); expect(actualY).toBeLessThan(overtimeY)
+  await expect(page.getByRole('cell', { name: '20 d 20 h' })).toBeAttached()
+  await page.setViewportSize({ width: 360, height: 800 }); await expect(ticks.first()).toHaveText('0 h')
+  const mobileSvg = await page.getByRole('img', { name: 'Work-hours trend' }).boundingBox()
+  const mobileTickBoxes = await ticks.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().toJSON()))
+  expect(mobileSvg && mobileTickBoxes.every((box) => box.x >= mobileSvg.x && box.x + box.width <= mobileSvg.x + mobileSvg.width)).toBeTruthy()
+  await page.evaluate(() => { localStorage.setItem('lang', 'ar'); localStorage.setItem('theme', 'dark') }); await page.reload()
+  await expect(page.getByTestId('trend-y-tick').first()).toBeVisible()
+  const arabicLabels = await page.getByTestId('trend-y-tick').allTextContents()
+  expect(arabicLabels[0]).toContain('ساعة'); expect(arabicLabels.every((label) => !/\.\d{2,}/.test(label))).toBeTruthy()
+})
+
 test('supports the language, theme, viewport, and keyboard acceptance matrix', async ({ page }) => {
   await mockApp(page); await page.goto('/dashboard')
   for (const viewport of [{ width: 360, height: 800 }, { width: 768, height: 900 }, { width: 1440, height: 1000 }]) {

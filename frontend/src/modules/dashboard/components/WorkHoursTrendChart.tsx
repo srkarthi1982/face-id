@@ -12,6 +12,7 @@ const series = [
   { field: 'actual_seconds', color: '--accent', label: 'actual' },
   { field: 'overtime_seconds', color: '--warning', label: 'overtime' },
 ] as const
+const toHours = (seconds: number) => seconds / 3600
 
 export default function WorkHoursTrendChart({ data }: { data: DashboardTrend }) {
   const { t, lang } = useI18n(); const setGranularity = useDashboardStore((state) => state.setGranularity)
@@ -30,15 +31,20 @@ export default function WorkHoursTrendChart({ data }: { data: DashboardTrend }) 
   }, [])
 
   const chart = useMemo(() => {
-    const height = 280; const margin = { top: 20, right: 18, bottom: 42, left: 62 }
-    const innerWidth = Math.max(1, width - margin.left - margin.right); const innerHeight = height - margin.top - margin.bottom
+    const height = 280; const innerHeight = height - 20 - 42
+    const maximumSeconds = d3.max(points, (point) => Math.max(point.scheduled_seconds, point.actual_seconds, point.overtime_seconds)) ?? 0
+    const maximumHours = Math.max(toHours(maximumSeconds), 1)
+    const y = d3.scaleLinear().domain([0, maximumHours]).nice(5).range([innerHeight, 0])
+    const yTicks = y.ticks(5)
+    const tickValue = (tick: number) => Math.abs(tick) >= 10 ? Math.round(tick) : Math.round(tick * 10) / 10
+    const tickLabels = yTicks.map((tick) => `${formatNumber(tickValue(tick), lang)} ${t('nav.dashboard.units.hour')}`)
+    const margin = { top: 20, right: 18, bottom: 42, left: Math.max(62, Math.min(112, Math.max(...tickLabels.map((label) => label.length), 1) * 7 + 14)) }
+    const innerWidth = Math.max(1, width - margin.left - margin.right)
     const x = d3.scalePoint<string>().domain(points.map((point) => point.period_key)).range([0, innerWidth]).padding(.25)
-    const maximum = d3.max(points, (point) => Math.max(point.scheduled_seconds, point.actual_seconds, point.overtime_seconds)) ?? 1
-    const y = d3.scaleLinear().domain([0, maximum]).nice().range([innerHeight, 0])
-    const paths = series.map(({ field }) => d3.line<TrendPoint>().x((point) => x(point.period_key) ?? 0).y((point) => y(point[field]))(points) ?? '')
+    const paths = series.map(({ field }) => d3.line<TrendPoint>().x((point) => x(point.period_key) ?? 0).y((point) => y(toHours(point[field])))(points) ?? '')
     const xTicks = points.filter((_point, index) => index % Math.max(1, Math.ceil(points.length / 6)) === 0)
-    return { height, margin, innerHeight, x, y, paths, xTicks, yTicks: y.ticks(5) }
-  }, [points, width])
+    return { height, margin, innerHeight, x, y, paths, xTicks, yTicks, tickLabels }
+  }, [lang, points, t, width])
 
   const point = active === null ? null : points[active]
   return <div>
@@ -51,10 +57,10 @@ export default function WorkHoursTrendChart({ data }: { data: DashboardTrend }) 
         <title id="trend-title">{t('nav.dashboard.chart.title')}</title><desc id="trend-desc">{t('nav.dashboard.chart.description')}</desc>
         <g transform={`translate(${chart.margin.left},${chart.margin.top})`}>
           <line x1="0" y1={chart.innerHeight} x2={width - chart.margin.left - chart.margin.right} y2={chart.innerHeight} stroke="var(--border)" />
-          {chart.yTicks.map((tick) => <g key={tick} transform={`translate(0,${chart.y(tick)})`}><line x1="-4" x2="0" stroke="var(--border)" /><text x="-8" dy="0.32em" textAnchor="end" fill="var(--text-secondary)" fontSize="10">{tick / 3600} {t('nav.dashboard.units.hour')}</text></g>)}
+          {chart.yTicks.map((tick, index) => <g key={tick} transform={`translate(0,${chart.y(tick)})`}><line x1="-4" x2="0" stroke="var(--border)" /><text data-testid="trend-y-tick" x="-8" dy="0.32em" textAnchor="end" fill="var(--text-secondary)" fontSize="10">{chart.tickLabels[index]}</text></g>)}
           {chart.xTicks.map((tick) => <text key={tick.period_key} x={chart.x(tick.period_key)} y={chart.innerHeight + 24} textAnchor="middle" fill="var(--text-secondary)" fontSize="10">{tick.period_key}</text>)}
           {series.map(({ color, label }, index) => <path key={label} data-series={label} d={chart.paths[index]} fill="none" stroke={`var(${color})`} strokeWidth="2" />)}
-          {points.map((entry, index) => <circle key={entry.period_key} cx={chart.x(entry.period_key)} cy={chart.y(entry.actual_seconds)} r="5" fill="var(--accent)" stroke="var(--surface)" strokeWidth="2" className="cursor-pointer" onMouseEnter={() => setActive(index)} onMouseLeave={() => setActive(null)} />)}
+          {points.map((entry, index) => <circle key={entry.period_key} cx={chart.x(entry.period_key)} cy={chart.y(toHours(entry.actual_seconds))} r="5" fill="var(--accent)" stroke="var(--surface)" strokeWidth="2" className="cursor-pointer" onMouseEnter={() => setActive(index)} onMouseLeave={() => setActive(null)} />)}
         </g>
       </svg>
       <div className="sr-only"><table><caption>{t('nav.dashboard.chart.summary')}</caption><thead><tr><th>{t('nav.dashboard.chart.period')}</th><th>{labels.scheduled}</th><th>{labels.actual}</th><th>{labels.overtime}</th><th>{t('nav.dashboard.kpi.employees')}</th></tr></thead><tbody>{points.map((entry, index) => <tr key={entry.period_key}><td><button onFocus={() => setActive(index)} onBlur={() => setActive(null)}>{entry.period_key}</button></td><td>{formatDuration(entry.scheduled_seconds, lang, units)}</td><td>{formatDuration(entry.actual_seconds, lang, units)}</td><td>{formatDuration(entry.overtime_seconds, lang, units)}</td><td>{formatNumber(entry.employee_count, lang)}</td></tr>)}</tbody></table></div>
