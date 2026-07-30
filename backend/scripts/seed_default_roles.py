@@ -60,10 +60,7 @@ DEFAULT_ROLES: list[tuple[str, str, list[str]]] = [
     (
         "Admin",
         "Admin Role",
-        [
-            "admin:full",
-            "role:manage"
-        ],
+        [],  # Resolved to every available permission by seed_roles().
     ),
 ]
 
@@ -78,21 +75,13 @@ def seed_roles(db: Session) -> None:
     skipped_perms = 0
     missing_perms: dict[str, list[str]] = {}
 
-    # Handle existing 'admin' role: assign all permissions if it exists.
-    admin_role = db.query(Role).filter(Role.name == "admin").first()
-    if admin_role:
-        logger.info("Found existing admin role: %s", admin_role.name)
-        for perm in permissions_by_code.values():
-            if perm not in admin_role.permissions:
-                admin_role.permissions.append(perm)
-                assigned_perms += 1
-                logger.info("Assigned all permissions to admin role: %s", perm.code)
-        db.commit()
-        logger.info("Admin role updated with all %d permissions", len(permissions_by_code))
-    else:
-        logger.info("Admin role does not exist, skipping admin update")
-
     for role_name, role_desc, perm_codes in DEFAULT_ROLES:
+        # The system Admin role always receives the complete permission set.
+        # Keep this dynamic so newly introduced permissions are granted on the
+        # next idempotent seed run without maintaining a second hard-coded list.
+        if role_name.casefold() == "admin":
+            perm_codes = sorted(permissions_by_code)
+
         # Check if role already exists.
         existing_role = db.query(Role).filter(Role.name == role_name).first()
         if existing_role:
