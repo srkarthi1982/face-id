@@ -7,6 +7,7 @@ const manifest: ModuleManifest = {
   icon: HiMiniCubeTransparent,
   path: '/dashboard',
   page: DashboardPage,
+  permissions: ['analytics:read'],
   order: 0,
 }
 export default manifest

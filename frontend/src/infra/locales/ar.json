@@ -159,7 +159,19 @@
     "survey": "Survey",
     "form": "Form",
     "dashboard": {
-      "title": "لوحة التحكم"
+      "title": "لوحة المعلومات",
+      "description": "تحليلات الحضور وساعات العمل الرسمية من مصدر التقارير.",
+      "effectiveRange": "الفترة الفعلية",
+      "latestSource": "أحدث تقرير",
+      "actions": { "apply": "تطبيق عوامل التصفية", "reset": "إعادة تعيين", "refresh": "تحديث", "retry": "إعادة المحاولة", "previous": "السابق", "next": "التالي" },
+      "filters": { "title": "عوامل تصفية لوحة المعلومات", "start": "تاريخ البدء", "end": "تاريخ الانتهاء", "organization": "الجهة" },
+      "states": { "loading": "جارٍ تحميل تحليلات الحضور", "empty": "لا توجد تحليلات حضور مطابقة لعوامل التصفية.", "unavailable": "تحليلات الحضور غير متاحة مؤقتاً.", "error": "تعذر تحميل هذا القسم من لوحة المعلومات." },
+      "units": { "day": "يوم", "hour": "ساعة", "minute": "دقيقة", "zero": "٠ دقيقة" },
+      "kpi": { "employees": "الموظفون", "actual": "العمل الفعلي", "overtime": "العمل الإضافي", "exceptions": "الاستثناءات المسجلة", "scheduled": "العمل المجدول", "normal": "العمل العادي", "late": "وقت التأخير", "early": "وقت المغادرة المبكرة", "absent": "وقت الغياب", "reportDays": "أيام التقارير" },
+      "chart": { "title": "اتجاه ساعات العمل", "description": "العمل المجدول والفعلي والإضافي عبر فترات التقارير.", "summary": "بيانات اتجاه ساعات العمل المتاحة لوسائل الوصول", "granularity": "دقة الاتجاه", "scheduled": "العمل المجدول", "actual": "العمل الفعلي", "overtime": "العمل الإضافي" },
+      "granularity": { "day": "يوم", "week": "أسبوع", "month": "شهر", "year": "سنة" },
+      "ranking": { "title": "ترتيب ساعات عمل الموظفين", "limit": "الصفوف", "rank": "الترتيب", "employee": "الموظف", "employeeNo": "رقم الموظف", "organization": "الجهة", "department": "القسم", "reportDays": "أيام التقارير", "actual": "العمل الفعلي", "overtime": "العمل الإضافي", "late": "وقت التأخير" },
+      "exceptions": { "title": "استثناءات الحضور المسجلة", "date": "التاريخ", "time": "الوقت", "employee": "الموظف", "employeeNo": "رقم الموظف", "organization": "الجهة", "device": "الجهاز", "unknown": "بيانات الموظف غير متاحة", "pageSize": "عدد الصفوف في الصفحة" }
     },
     "scheduleManagement": "إدارة الجداول",
     "profileGeneralInfo": {

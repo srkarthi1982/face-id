@@ -156,7 +156,19 @@
       "open": "Open"
     },
     "dashboard": {
-      "title": "Dashboard"
+      "title": "Dashboard",
+      "description": "Official attendance and work-hour analytics from the reporting source.",
+      "effectiveRange": "Effective range",
+      "latestSource": "Latest report",
+      "actions": { "apply": "Apply filters", "reset": "Reset", "refresh": "Refresh", "retry": "Retry", "previous": "Previous", "next": "Next" },
+      "filters": { "title": "Dashboard filters", "start": "Start date", "end": "End date", "organization": "Organization" },
+      "states": { "loading": "Loading attendance analytics", "empty": "No attendance analytics match these filters.", "unavailable": "Attendance analytics are temporarily unavailable.", "error": "This dashboard section could not be loaded." },
+      "units": { "day": "d", "hour": "h", "minute": "min", "zero": "0 min" },
+      "kpi": { "employees": "Employees", "actual": "Actual work", "overtime": "Overtime", "exceptions": "Reported exceptions", "scheduled": "Scheduled work", "normal": "Normal work", "late": "Late time", "early": "Early-leave time", "absent": "Absent time", "reportDays": "Report days" },
+      "chart": { "title": "Work-hours trend", "description": "Scheduled, actual, and overtime work across reporting periods.", "summary": "Accessible work-hours trend data", "granularity": "Trend granularity", "scheduled": "Scheduled work", "actual": "Actual work", "overtime": "Overtime" },
+      "granularity": { "day": "Day", "week": "Week", "month": "Month", "year": "Year" },
+      "ranking": { "title": "Employee work-hours ranking", "limit": "Rows", "rank": "Rank", "employee": "Employee", "employeeNo": "Employee number", "organization": "Organization", "department": "Department", "reportDays": "Report days", "actual": "Actual work", "overtime": "Overtime", "late": "Late time" },
+      "exceptions": { "title": "Reported attendance exceptions", "date": "Date", "time": "Time", "employee": "Employee", "employeeNo": "Employee number", "organization": "Organization", "device": "Device", "unknown": "Employee unavailable", "pageSize": "Rows per page" }
     },
     "scheduleManagement": "Schedule Management",
     "profileGeneralInfo": {
