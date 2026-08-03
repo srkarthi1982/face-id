@@ -1,296 +1,255 @@
-"""Bounded cross-dialect SQLAlchemy Core aggregates for Luna analytics."""
+"""Explicit, parameterized, read-only T-SQL for Luna attendance analytics."""
 
 from datetime import date
 from typing import Any
 
-from sqlalchemy import Select, and_, case, distinct, func, literal, select, union_all
-
 from .constants import ACTIVE_DEL_STATUS
-from .db import _execute_luna_select
-from .tables import saas_ca_person, saas_ca_report_daily, saas_ca_report_exception
+from .db import execute_luna_select
 
 
-_DURATION_AGGREGATES = {
-    "scheduled_seconds": saas_ca_report_daily.c.plan_work_time,
-    "actual_seconds": saas_ca_report_daily.c.real_work_time,
-    "normal_seconds": saas_ca_report_daily.c.normal_time,
-    "overtime_seconds": saas_ca_report_daily.c.overwork_time,
-    "late_seconds": saas_ca_report_daily.c.late_time,
-    "early_seconds": saas_ca_report_daily.c.early_time,
-    "absent_seconds": saas_ca_report_daily.c.absent_time,
-}
+_ORG = "NULLIF(LTRIM(RTRIM(org_id)), '')"
+_PERSON_ID = "NULLIF(LTRIM(RTRIM(person_id)), '')"
+_PERSON_NO = "NULLIF(LTRIM(RTRIM(person_no)), '')"
+_IDENTITY = f"COALESCE({_PERSON_ID}, {_PERSON_NO})"
+_SOURCE = f"CASE WHEN {_PERSON_ID} IS NOT NULL THEN 'person_id' ELSE 'person_no' END"
+_DURATION_SELECT = """
+    COALESCE(SUM(plan_work_time), 0) AS scheduled_seconds,
+    COALESCE(SUM(real_work_time), 0) AS actual_seconds,
+    COALESCE(SUM(normal_time), 0) AS normal_seconds,
+    COALESCE(SUM(overwork_time), 0) AS overtime_seconds,
+    COALESCE(SUM(late_time), 0) AS late_seconds,
+    COALESCE(SUM(early_time), 0) AS early_seconds,
+    COALESCE(SUM(absent_time), 0) AS absent_seconds
+"""
 
 
-def _normalized_org(column):
-    """Canonical Luna organization identity: trimmed, with blanks treated as null."""
-    return func.nullif(func.trim(column), "")
+def _org_clause(org_id: str | None, *, alias: str = "") -> tuple[str, dict[str, Any]]:
+    if org_id is None:
+        return "", {}
+    prefix = f"{alias}." if alias else ""
+    return f" AND NULLIF(LTRIM(RTRIM({prefix}org_id)), '') = :org_id", {"org_id": org_id}
 
 
-def organizations_statement() -> Select[Any]:
-    """Return one bounded, cross-dialect query for active Luna organization IDs."""
-    sources = []
-    for table in (saas_ca_report_daily, saas_ca_report_exception, saas_ca_person):
-        normalized = _normalized_org(table.c.org_id)
-        sources.append(
-            select(normalized.label("org_id")).where(
-                table.c.del_status == ACTIVE_DEL_STATUS,
-                normalized.is_not(None),
-            ).distinct()
-        )
-    combined = union_all(*sources).subquery("active_organization_sources")
-    return select(combined.c.org_id).distinct().order_by(combined.c.org_id)
+def _range_params(start_date: date, end_date: date, org_id: str | None = None):
+    clause, params = _org_clause(org_id)
+    return clause, {"active": ACTIVE_DEL_STATUS, "start_date": start_date, "end_date": end_date, **params}
+
+
+def organizations_statement() -> tuple[str, dict[str, Any]]:
+    sql = """
+SELECT DISTINCT org_id
+FROM (
+    SELECT DISTINCT NULLIF(LTRIM(RTRIM(org_id)), '') AS org_id
+    FROM dbo.saas_ca_report_daily WHERE del_status = :active
+    UNION ALL
+    SELECT DISTINCT NULLIF(LTRIM(RTRIM(org_id)), '') AS org_id
+    FROM dbo.saas_ca_report_exception WHERE del_status = :active
+    UNION ALL
+    SELECT DISTINCT NULLIF(LTRIM(RTRIM(org_id)), '') AS org_id
+    FROM dbo.saas_ca_person WHERE del_status = :active
+) AS active_organization_sources
+WHERE org_id IS NOT NULL
+ORDER BY org_id
+"""
+    return sql, {"active": ACTIVE_DEL_STATUS}
 
 
 def get_organizations():
-    return _execute_luna_select(organizations_statement())
+    return execute_luna_select(*organizations_statement())
 
 
-def _normalized_identity_columns():
-    person_id = func.nullif(func.trim(saas_ca_report_daily.c.person_id), "")
-    person_no = func.nullif(func.trim(saas_ca_report_daily.c.person_no), "")
-    source = case((person_id.is_not(None), literal("person_id")), else_=literal("person_no"))
-    value = func.coalesce(person_id, person_no)
-    return person_id, person_no, source, value
-
-
-def _daily_predicates(start_date: date, end_date: date, org_id: str | None):
-    predicates = [
-        saas_ca_report_daily.c.del_status == ACTIVE_DEL_STATUS,
-        saas_ca_report_daily.c.report_date >= start_date,
-        saas_ca_report_daily.c.report_date <= end_date,
-    ]
-    if org_id is not None:
-        predicates.append(_normalized_org(saas_ca_report_daily.c.org_id) == org_id)
-    return predicates
-
-
-def _sum_columns():
-    return [
-        func.coalesce(func.sum(column), 0).label(name)
-        for name, column in _DURATION_AGGREGATES.items()
-    ]
-
-
-def latest_report_date_statement(org_id: str | None = None) -> Select[Any]:
-    predicates = [saas_ca_report_daily.c.del_status == ACTIVE_DEL_STATUS]
-    if org_id is not None:
-        predicates.append(_normalized_org(saas_ca_report_daily.c.org_id) == org_id)
-    return select(func.max(saas_ca_report_daily.c.report_date).label("latest")).where(*predicates)
+def latest_report_date_statement(org_id: str | None = None):
+    clause, params = _org_clause(org_id)
+    return f"""
+SELECT MAX(report_date) AS latest
+FROM dbo.saas_ca_report_daily
+WHERE del_status = :active{clause}
+""", {"active": ACTIVE_DEL_STATUS, **params}
 
 
 def get_latest_report_date(org_id: str | None = None) -> date | None:
-    rows = _execute_luna_select(latest_report_date_statement(org_id))
+    rows = execute_luna_select(*latest_report_date_statement(org_id))
     return rows[0]["latest"] if rows else None
 
 
-def overview_statement(start_date: date, end_date: date, org_id: str | None = None) -> Select[Any]:
-    return select(
-        func.count().label("report_row_count"),
-        func.count(distinct(saas_ca_report_daily.c.report_date)).label("report_day_count"),
-        *_sum_columns(),
-    ).where(*_daily_predicates(start_date, end_date, org_id))
+def overview_statement(start_date: date, end_date: date, org_id: str | None = None):
+    clause, params = _range_params(start_date, end_date, org_id)
+    return f"""
+SELECT COUNT(*) AS report_row_count,
+       COUNT(DISTINCT report_date) AS report_day_count,
+       {_DURATION_SELECT}
+FROM dbo.saas_ca_report_daily
+WHERE del_status = :active AND report_date >= :start_date AND report_date <= :end_date{clause}
+""", params
 
 
-def scoped_identity_count_statement(
-    start_date: date, end_date: date, org_id: str | None = None
-) -> Select[Any]:
-    _person_id, _person_no, source, value = _normalized_identity_columns()
-    identities = (
-        select(_normalized_org(saas_ca_report_daily.c.org_id).label("org_id"), source.label("identity_source"), value.label("identity_value"))
-        .where(*_daily_predicates(start_date, end_date, org_id), value.is_not(None))
-        .group_by(_normalized_org(saas_ca_report_daily.c.org_id), source, value)
-        .subquery("scoped_identities")
-    )
-    return select(func.count().label("employee_count")).select_from(identities)
+def scoped_identity_count_statement(start_date: date, end_date: date, org_id: str | None = None):
+    clause, params = _range_params(start_date, end_date, org_id)
+    return f"""
+SELECT COUNT(*) AS employee_count
+FROM (
+    SELECT DISTINCT {_ORG} AS org_id, {_SOURCE} AS identity_source, {_IDENTITY} AS identity_value
+    FROM dbo.saas_ca_report_daily
+    WHERE del_status = :active AND report_date >= :start_date AND report_date <= :end_date
+      AND {_IDENTITY} IS NOT NULL{clause}
+) AS scoped_identities
+""", params
 
 
 def get_overview_aggregate(start_date: date, end_date: date, org_id: str | None = None):
-    aggregate = dict(_execute_luna_select(overview_statement(start_date, end_date, org_id))[0])
-    identity = _execute_luna_select(scoped_identity_count_statement(start_date, end_date, org_id))[0]
+    aggregate = dict(execute_luna_select(*overview_statement(start_date, end_date, org_id))[0])
+    identity = execute_luna_select(*scoped_identity_count_statement(start_date, end_date, org_id))[0]
     aggregate["employee_count"] = int(identity["employee_count"])
     return aggregate
 
 
-def trend_dates_statement(start_date: date, end_date: date, org_id: str | None = None) -> Select[Any]:
-    return (
-        select(
-            saas_ca_report_daily.c.report_date,
-            func.count().label("report_row_count"),
-            *_sum_columns(),
-        )
-        .where(*_daily_predicates(start_date, end_date, org_id))
-        .group_by(saas_ca_report_daily.c.report_date)
-        .order_by(saas_ca_report_daily.c.report_date)
-    )
+def trend_dates_statement(start_date: date, end_date: date, org_id: str | None = None):
+    clause, params = _range_params(start_date, end_date, org_id)
+    return f"""
+SELECT report_date, COUNT(*) AS report_row_count, {_DURATION_SELECT}
+FROM dbo.saas_ca_report_daily
+WHERE del_status = :active AND report_date >= :start_date AND report_date <= :end_date{clause}
+GROUP BY report_date
+ORDER BY report_date
+""", params
 
 
-def trend_date_identity_counts_statement(
-    start_date: date, end_date: date, org_id: str | None = None
-) -> Select[Any]:
-    _person_id, _person_no, source, value = _normalized_identity_columns()
-    identities = (
-        select(
-            saas_ca_report_daily.c.report_date,
-            _normalized_org(saas_ca_report_daily.c.org_id).label("org_id"),
-            source.label("identity_source"),
-            value.label("identity_value"),
-        )
-        .where(*_daily_predicates(start_date, end_date, org_id), value.is_not(None))
-        .group_by(saas_ca_report_daily.c.report_date, _normalized_org(saas_ca_report_daily.c.org_id), source, value)
-        .subquery("date_identities")
-    )
-    return (
-        select(identities.c.report_date, func.count().label("employee_count"))
-        .group_by(identities.c.report_date)
-        .order_by(identities.c.report_date)
-    )
+def trend_date_identity_counts_statement(start_date: date, end_date: date, org_id: str | None = None):
+    clause, params = _range_params(start_date, end_date, org_id)
+    return f"""
+SELECT report_date, COUNT(*) AS employee_count
+FROM (
+    SELECT DISTINCT report_date, {_ORG} AS org_id, {_SOURCE} AS identity_source, {_IDENTITY} AS identity_value
+    FROM dbo.saas_ca_report_daily
+    WHERE del_status = :active AND report_date >= :start_date AND report_date <= :end_date
+      AND {_IDENTITY} IS NOT NULL{clause}
+) AS date_identities
+GROUP BY report_date
+ORDER BY report_date
+""", params
 
 
 def get_trend_date_aggregates(start_date: date, end_date: date, org_id: str | None = None):
-    totals = [dict(row) for row in _execute_luna_select(trend_dates_statement(start_date, end_date, org_id))]
-    counts = {
-        row["report_date"]: int(row["employee_count"])
-        for row in _execute_luna_select(trend_date_identity_counts_statement(start_date, end_date, org_id))
-    }
+    totals = [dict(row) for row in execute_luna_select(*trend_dates_statement(start_date, end_date, org_id))]
+    counts = {row["report_date"]: int(row["employee_count"]) for row in execute_luna_select(*trend_date_identity_counts_statement(start_date, end_date, org_id))}
     for row in totals:
         row["employee_count"] = counts.get(row["report_date"], 0)
+        if isinstance(row["report_date"], str):
+            row["report_date"] = date.fromisoformat(row["report_date"])
     return totals
 
 
-def trend_period_identity_counts_statement(
-    periods: list[tuple[str, date, date]], org_id: str | None = None
-):
-    """Build one portable statement yielding one scoped identity count per period."""
-    period_selects = []
-    for index, (period_key, period_start, period_end) in enumerate(periods):
-        _person_id, _person_no, source, value = _normalized_identity_columns()
-        identities = (
-            select(
-                _normalized_org(saas_ca_report_daily.c.org_id).label("org_id"),
-                source.label("identity_source"),
-                value.label("identity_value"),
-            )
-            .where(*_daily_predicates(period_start, period_end, org_id), value.is_not(None))
-            .group_by(_normalized_org(saas_ca_report_daily.c.org_id), source, value)
-            .subquery(f"period_identities_{index}")
-        )
-        period_selects.append(
-            select(
-                literal(period_key).label("period_key"),
-                func.count().label("employee_count"),
-            ).select_from(identities)
-        )
-    if not period_selects:
+def trend_period_identity_counts_statement(periods: list[tuple[str, date, date]], org_id: str | None = None):
+    if not periods:
         raise ValueError("At least one trend period is required")
-    combined = union_all(*period_selects).subquery("all_period_employee_counts")
-    return select(combined.c.period_key, combined.c.employee_count)
+    org_clause, org_params = _org_clause(org_id)
+    selects, params = [], {"active": ACTIVE_DEL_STATUS, **org_params}
+    for index, (_key, _start, _end) in enumerate(periods):
+        selects.append(f"""
+SELECT :period_key_{index} AS period_key, COUNT(*) AS employee_count
+FROM (
+    SELECT DISTINCT {_ORG} AS org_id, {_SOURCE} AS identity_source, {_IDENTITY} AS identity_value
+    FROM dbo.saas_ca_report_daily
+    WHERE del_status = :active AND report_date >= :period_start_{index} AND report_date <= :period_end_{index}
+      AND {_IDENTITY} IS NOT NULL{org_clause}
+) AS period_identities_{index}""")
+        params = {**params, f"period_key_{index}": periods[index][0], f"period_start_{index}": periods[index][1], f"period_end_{index}": periods[index][2]}
+    return "\nUNION ALL\n".join(selects), params
 
 
-def get_trend_period_employee_counts(
-    periods: list[tuple[str, date, date]], org_id: str | None = None
-) -> dict[str, int]:
-    rows = _execute_luna_select(trend_period_identity_counts_statement(periods, org_id))
+def get_trend_period_employee_counts(periods: list[tuple[str, date, date]], org_id: str | None = None) -> dict[str, int]:
+    rows = execute_luna_select(*trend_period_identity_counts_statement(periods, org_id))
     return {row["period_key"]: int(row["employee_count"]) for row in rows}
 
 
-def ranking_statement(
-    start_date: date, end_date: date, org_id: str | None, limit: int
-) -> Select[Any]:
-    person_id, person_no, source, value = _normalized_identity_columns()
-    display_person_no = func.min(person_no)
-    display_person_name = func.min(saas_ca_report_daily.c.person_name)
-    display_department = func.min(saas_ca_report_daily.c.dept_name)
-    actual_total = func.coalesce(func.sum(saas_ca_report_daily.c.real_work_time), 0)
-    selected_person_id = case((source == literal("person_id"), value), else_=None)
-    statement = (
-        select(
-            _normalized_org(saas_ca_report_daily.c.org_id).label("org_id"),
-            source.label("identity_source"),
-            value.label("employee_key"),
-            selected_person_id.label("person_id"),
-            display_person_no.label("person_no"),
-            display_person_name.label("person_name"),
-            display_department.label("department_name"),
-            func.count(distinct(saas_ca_report_daily.c.report_date)).label("report_day_count"),
-            *_sum_columns(),
-        )
-        .where(*_daily_predicates(start_date, end_date, org_id), value.is_not(None))
-        .group_by(_normalized_org(saas_ca_report_daily.c.org_id), source, value)
-        .order_by(
-            actual_total.desc(),
-            case((display_person_no.is_(None), 1), else_=0),
-            display_person_no,
-            case((selected_person_id.is_(None), 1), else_=0),
-            selected_person_id,
-            _normalized_org(saas_ca_report_daily.c.org_id),
-            source,
-            value,
-        )
-        .limit(limit)
-    )
-    return statement
+def ranking_statement(start_date: date, end_date: date, org_id: str | None, limit: int | None):
+    clause, params = _range_params(start_date, end_date, org_id)
+    limit_clause = ""
+    if limit is not None:
+        params["limit"] = limit
+        limit_clause = " WHERE row_position <= :limit"
+    return f"""
+WITH scoped AS (
+    SELECT {_ORG} AS org_id, {_SOURCE} AS identity_source, {_IDENTITY} AS employee_key,
+           {_PERSON_NO} AS person_no, person_name, dept_name, report_date,
+           plan_work_time, real_work_time, normal_time, overwork_time, late_time, early_time, absent_time
+    FROM dbo.saas_ca_report_daily
+    WHERE del_status = :active AND report_date >= :start_date AND report_date <= :end_date
+      AND {_IDENTITY} IS NOT NULL{clause}
+), aggregated AS (
+    SELECT org_id, identity_source, employee_key,
+           CASE WHEN identity_source = 'person_id' THEN employee_key END AS person_id,
+           MIN(person_no) AS person_no, MIN(person_name) AS person_name, MIN(dept_name) AS department_name,
+           COUNT(DISTINCT report_date) AS report_day_count,
+           COALESCE(SUM(plan_work_time), 0) AS scheduled_seconds,
+           COALESCE(SUM(real_work_time), 0) AS actual_seconds,
+           COALESCE(SUM(normal_time), 0) AS normal_seconds,
+           COALESCE(SUM(overwork_time), 0) AS overtime_seconds,
+           COALESCE(SUM(late_time), 0) AS late_seconds,
+           COALESCE(SUM(early_time), 0) AS early_seconds,
+           COALESCE(SUM(absent_time), 0) AS absent_seconds
+    FROM scoped GROUP BY org_id, identity_source, employee_key
+), ranked AS (
+    SELECT ROW_NUMBER() OVER (ORDER BY actual_seconds DESC,
+           CASE WHEN person_no IS NULL THEN 1 ELSE 0 END, person_no,
+           CASE WHEN person_id IS NULL THEN 1 ELSE 0 END, person_id,
+           org_id, identity_source, employee_key) AS row_position, *
+    FROM aggregated
+)
+SELECT org_id, identity_source, employee_key, person_id, person_no, person_name,
+       department_name, report_day_count, scheduled_seconds, actual_seconds,
+       normal_seconds, overtime_seconds, late_seconds, early_seconds, absent_seconds
+FROM ranked{limit_clause} ORDER BY row_position
+""", params
 
 
-def get_ranking_aggregates(start_date: date, end_date: date, org_id: str | None, limit: int):
-    return _execute_luna_select(ranking_statement(start_date, end_date, org_id, limit))
+def get_ranking_aggregates(start_date: date, end_date: date, org_id: str | None, limit: int | None):
+    return execute_luna_select(*ranking_statement(start_date, end_date, org_id, limit))
 
 
-def exception_count_statement(start_date: date, end_date: date, org_id: str | None = None) -> Select[Any]:
-    predicates = [
-        saas_ca_report_exception.c.del_status == ACTIVE_DEL_STATUS,
-        saas_ca_report_exception.c.report_date >= start_date,
-        saas_ca_report_exception.c.report_date <= end_date,
-    ]
-    if org_id is not None:
-        predicates.append(_normalized_org(saas_ca_report_exception.c.org_id) == org_id)
-    return select(func.count().label("total")).select_from(saas_ca_report_exception).where(*predicates)
+def exception_count_statement(start_date: date, end_date: date, org_id: str | None = None):
+    clause, params = _range_params(start_date, end_date, org_id)
+    return f"""
+SELECT COUNT(*) AS total FROM dbo.saas_ca_report_exception
+WHERE del_status = :active AND report_date >= :start_date AND report_date <= :end_date{clause}
+""", params
 
 
 def count_exceptions(start_date: date, end_date: date, org_id: str | None = None) -> int:
-    rows = _execute_luna_select(exception_count_statement(start_date, end_date, org_id))
+    rows = execute_luna_select(*exception_count_statement(start_date, end_date, org_id))
     return int(rows[0]["total"]) if rows else 0
 
 
-def exceptions_statement(
-    start_date: date, end_date: date, org_id: str | None, page: int, page_size: int
-) -> Select[Any]:
-    active_person_ids = (
-        select(
-            _normalized_org(saas_ca_person.c.org_id).label("org_id"), saas_ca_person.c.person_id.label("person_id"),
-            func.min(saas_ca_person.c.id).label("person_row_id"),
-        )
-        .where(saas_ca_person.c.del_status == ACTIVE_DEL_STATUS)
-        .group_by(_normalized_org(saas_ca_person.c.org_id), saas_ca_person.c.person_id)
-        .subquery("active_person_ids")
-    )
-    person = saas_ca_person.alias("exception_person")
-    predicates = [
-        saas_ca_report_exception.c.del_status == ACTIVE_DEL_STATUS,
-        saas_ca_report_exception.c.report_date >= start_date,
-        saas_ca_report_exception.c.report_date <= end_date,
-    ]
-    if org_id is not None:
-        predicates.append(_normalized_org(saas_ca_report_exception.c.org_id) == org_id)
-    return (
-        select(
-            saas_ca_report_exception.c.id, _normalized_org(saas_ca_report_exception.c.org_id).label("org_id"),
-            saas_ca_report_exception.c.person_id, person.c.person_no, person.c.person_name,
-            saas_ca_report_exception.c.report_date, saas_ca_report_exception.c.clock_time,
-            saas_ca_report_exception.c.device_key, saas_ca_report_exception.c.device_name,
-        )
-        .select_from(
-            saas_ca_report_exception.outerjoin(
-                active_person_ids,
-                and_(active_person_ids.c.org_id == _normalized_org(saas_ca_report_exception.c.org_id),
-                     active_person_ids.c.person_id == saas_ca_report_exception.c.person_id),
-            ).outerjoin(person, person.c.id == active_person_ids.c.person_row_id)
-        )
-        .where(*predicates)
-        .order_by(saas_ca_report_exception.c.report_date.desc(),
-                  saas_ca_report_exception.c.clock_time.desc(), saas_ca_report_exception.c.id.desc())
-        .offset((page - 1) * page_size).limit(page_size)
-    )
+def exceptions_statement(start_date: date, end_date: date, org_id: str | None, page: int, page_size: int):
+    clause, params = _range_params(start_date, end_date, org_id)
+    params = {**params, "row_start": (page - 1) * page_size + 1, "row_end": page * page_size}
+    exception_org_clause = " AND NULLIF(LTRIM(RTRIM(exception_report.org_id)), '') = :org_id" if org_id is not None else ""
+    return f"""
+WITH normalized_people AS (
+    SELECT id, {_ORG} AS org_id, person_id, person_no, person_name
+    FROM dbo.saas_ca_person WHERE del_status = :active
+), active_person_ids AS (
+    SELECT org_id, person_id, MIN(id) AS person_row_id
+    FROM normalized_people GROUP BY org_id, person_id
+), ranked_exceptions AS (
+    SELECT ROW_NUMBER() OVER (ORDER BY exception_report.report_date DESC,
+               exception_report.clock_time DESC, exception_report.id DESC) AS row_number,
+           exception_report.id, NULLIF(LTRIM(RTRIM(exception_report.org_id)), '') AS org_id,
+           exception_report.person_id, person.person_no, person.person_name,
+           exception_report.report_date, exception_report.clock_time,
+           exception_report.device_key, exception_report.device_name
+    FROM dbo.saas_ca_report_exception AS exception_report
+    LEFT JOIN active_person_ids ON active_person_ids.org_id = NULLIF(LTRIM(RTRIM(exception_report.org_id)), '')
+         AND active_person_ids.person_id = exception_report.person_id
+    LEFT JOIN normalized_people AS person ON person.id = active_person_ids.person_row_id
+    WHERE exception_report.del_status = :active
+      AND exception_report.report_date >= :start_date AND exception_report.report_date <= :end_date{exception_org_clause}
+)
+SELECT id, org_id, person_id, person_no, person_name, report_date, clock_time, device_key, device_name
+FROM ranked_exceptions WHERE row_number >= :row_start AND row_number <= :row_end
+ORDER BY row_number
+""", params
 
 
 def get_exceptions(start_date: date, end_date: date, org_id: str | None, page: int, page_size: int):
-    return _execute_luna_select(exceptions_statement(start_date, end_date, org_id, page, page_size))
+    return execute_luna_select(*exceptions_statement(start_date, end_date, org_id, page, page_size))

@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 from collections.abc import Sequence
 from threading import Lock
 from typing import Any
 
-from sqlalchemy import Table, create_engine, select
-from sqlalchemy.sql import Select
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
-from app.modules.dashboard.tables import luna_metadata
 
 
 class LunaConfigurationError(RuntimeError):
@@ -32,6 +31,10 @@ _DRIVER_MODULES = {
     "postgresql+psycopg2": "psycopg2",
     "mssql+pyodbc": "pyodbc",
 }
+_FORBIDDEN_SQL = re.compile(
+    r"\b(?:INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|GRANT|REVOKE)\b",
+    re.IGNORECASE,
+)
 
 
 def _configured_url() -> URL:
@@ -82,29 +85,6 @@ def _get_luna_engine() -> Engine:
     return _engine
 
 
-def fetch_luna_table_rows(table: Table, *, limit: int = 100) -> Sequence[dict[str, Any]]:
-    """Read rows from one explicitly declared Luna table.
-
-    Callers cannot submit SQL text, DML, DDL, arbitrary SQLAlchemy statements,
-    or client-provided query structures. Database permissions remain the
-    authoritative write-prevention boundary.
-    """
-    if (
-        not isinstance(table, Table)
-        or table.metadata is not luna_metadata
-        or table.fullname not in luna_metadata.tables
-    ):
-        raise TypeError("Only approved Luna tables can be read")
-    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
-        raise ValueError("Luna row limit must be between 1 and 1000")
-    statement = select(table).limit(limit)
-    try:
-        with _get_luna_engine().connect() as connection:
-            return [dict(row) for row in connection.execute(statement).mappings().all()]
-    except (SQLAlchemyError, OSError) as exc:
-        raise LunaUnavailableError("Luna data source is unavailable") from exc
-
-
 def dispose_luna_engine() -> None:
     """Dispose the lazy engine for tests or controlled process shutdown."""
     global _engine
@@ -114,12 +94,19 @@ def dispose_luna_engine() -> None:
             _engine = None
 
 
-def _execute_luna_select(statement: Select[Any]) -> Sequence[dict[str, Any]]:
-    """Execute an internally built dashboard SELECT with sanitized failures."""
-    if not isinstance(statement, Select):
-        raise TypeError("Dashboard Luna executor accepts SELECT statements only")
+def execute_luna_select(sql: str, parameters: dict[str, Any] | None = None) -> Sequence[dict[str, Any]]:
+    """Execute one internal, parameterized, read-only dashboard SQL statement."""
+    if (
+        not isinstance(sql, str)
+        or not sql.lstrip().upper().startswith(("SELECT", "WITH"))
+        or _FORBIDDEN_SQL.search(sql)
+    ):
+        raise TypeError("Dashboard Luna executor accepts read-only SQL only")
     try:
         with _get_luna_engine().connect() as connection:
-            return [dict(row) for row in connection.execute(statement).mappings().all()]
+            return [
+                dict(row)
+                for row in connection.execute(text(sql), parameters or {}).mappings().all()
+            ]
     except (SQLAlchemyError, OSError) as exc:
         raise LunaUnavailableError("Luna data source is unavailable") from exc

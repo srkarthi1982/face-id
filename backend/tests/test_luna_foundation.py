@@ -305,7 +305,7 @@ def test_seed_daily_aggregates_pair_sessions_and_partition_real_time() -> None:
     assert all(row["normal_time"] + row["overwork_time"] == row["real_work_time"] for row in daily)
 
 
-def test_representative_select_through_narrow_runtime_helper(
+def test_representative_select_through_plain_sql_runtime_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = create_engine("sqlite://")
@@ -315,25 +315,19 @@ def test_representative_select_through_narrow_runtime_helper(
         connection.execute(insert(saas_ca_person), build_seed_rows()["persons"][:1])
     monkeypatch.setattr(luna_db, "_engine", engine)
     try:
-        rows = luna_db.fetch_luna_table_rows(saas_ca_person, limit=1)
+        rows = luna_db.execute_luna_select(
+            "SELECT person_no FROM dbo.saas_ca_person WHERE person_no = :person_no",
+            {"person_no": "SYN-0001"},
+        )
         assert rows[0]["person_no"] == "SYN-0001"
     finally:
         luna_db.dispose_luna_engine()
 
 
-@pytest.mark.parametrize(
-    "statement",
-    [
-        text("SELECT 1"),
-        insert(saas_ca_person),
-        update(saas_ca_person),
-        delete(saas_ca_person),
-        CreateTable(saas_ca_person),
-    ],
-)
-def test_runtime_helper_rejects_text_dml_and_ddl(statement) -> None:
-    with pytest.raises(TypeError, match="approved Luna tables"):
-        luna_db.fetch_luna_table_rows(statement)  # type: ignore[arg-type]
+@pytest.mark.parametrize("statement", ["INSERT INTO x VALUES (1)", "UPDATE x SET y=1", "DELETE FROM x", "DROP TABLE x"])
+def test_runtime_helper_rejects_non_read_sql(statement) -> None:
+    with pytest.raises(TypeError, match="read-only SQL"):
+        luna_db.execute_luna_select(statement)
 
 
 def test_connection_error_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -345,7 +339,7 @@ def test_connection_error_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(luna_db, "_get_luna_engine", lambda: BrokenEngine())
     with pytest.raises(luna_db.LunaUnavailableError) as captured:
-        luna_db.fetch_luna_table_rows(saas_ca_person)
+        luna_db.execute_luna_select("SELECT person_no FROM dbo.saas_ca_person")
     assert str(captured.value) == "Luna data source is unavailable"
     assert "secret" not in str(captured.value)
     assert "private-host" not in str(captured.value)

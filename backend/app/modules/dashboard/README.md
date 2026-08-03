@@ -3,8 +3,8 @@
 The dashboard reads attendance data from Luna, an external and read-only data
 source. Local development simulates Luna in PostgreSQL database `luna_db` under
 schema `dbo`; production will use the office Microsoft SQL Server database.
-`LUNA_DATABASE_URL` selects either SQLAlchemy dialect without changing dashboard
-business code.
+`LUNA_DATABASE_URL` provides the connection transport without changing the
+application's primary PostgreSQL database configuration.
 
 The primary Face ID engine, sessions, metadata, transactions, and Alembic chain
 must remain completely separate from Luna. Alembic and runtime schema creation
@@ -13,10 +13,10 @@ are prohibited for Luna. Only the explicit local setup command under
 
 Application-level restriction and database-level enforcement are distinct:
 
-- The application exposes only a narrow function that builds `SELECT` queries
-  against the four declared tables. It does not accept arbitrary SQLAlchemy
-  statements or textual SQL. This reduces accidental writes but is not a proof
-  of database immutability.
+- The dashboard repository owns explicit parameterized T-SQL `SELECT` queries
+  against the declared reporting tables. SQLAlchemy is used only for connection
+  lifecycle and bound-parameter execution; it does not construct Luna SQL.
+  Request values are never interpolated into SQL text.
 - The configured database login must have database-enforced SELECT-only
   privileges. Database permissions are the authoritative write-prevention
   control. An administrator URL is never suitable for runtime deployment.
@@ -24,9 +24,9 @@ Application-level restriction and database-level enforcement are distinct:
 For SQL Server, `ApplicationIntent=ReadOnly` is an optional connection hint, not
 a replacement for database permissions.
 
-Local PostgreSQL uses the installed `psycopg2-binary` driver and a
-`postgresql+psycopg2://` URL. SQL Server requires the optional `mssql` dependency
-and a compatible Microsoft ODBC Driver for SQL Server on the host. Changing
+SQL Server requires the optional `mssql` dependency and a compatible installed
+ODBC driver. The configured name must match `pyodbc.drivers()` exactly; the
+office-proven `SQL Server` driver is supported and Driver 17/18 is not mandatory. Changing
 `LUNA_DATABASE_URL` alone is not sufficient on a fresh host. URL parsing proves
 neither driver availability nor connectivity. Production SQL Server connectivity
 remains unverified until tested in an approved environment.
@@ -61,12 +61,22 @@ All routes are under `/api/v1/dashboard` and require exactly
 - `GET /attendance-exceptions` returns stable, paginated, generic reported
   exceptions with optional Luna person enrichment.
 
+Ranking remains top-10 by default and accepts its existing bounded `limit`.
+The additive `include_all=true` mode returns every employee in the filtered
+date/organization scope for the comparison chart, using the same deterministic
+actual-work descending order and calculations. Chart requests may also pass
+`period=day|week|month|year`; the server clips that period to the resolved global
+range ending on its effective end date without changing ordinary ranking calls.
+
 Official duration metrics come only from `dbo.saas_ca_report_daily` and remain
 integer seconds. Reported exception counts and records come only from
 `dbo.saas_ca_report_exception`. `dbo.saas_ca_person` is used only for
 deterministic exception enrichment; when duplicates exist, the lowest active
 person-row ID is selected. The runtime analytics API does not query
 `dbo.saas_ca_clock_record`.
+
+The employee comparison chart consumes employee-level ranking data derived from
+the official daily report. It does not calculate work time from raw clock records.
 
 Organization options are read-only IDs because the supplied Luna contract has
 no organization-name table. A trimmed ID is the canonical organization

@@ -184,10 +184,23 @@ def get_trend(start_date, end_date, org_id, granularity, max_days: int) -> Dashb
     )
 
 
-def get_ranking(start_date, end_date, org_id, limit: int, max_days: int) -> EmployeeWorkHoursRanking:
+def get_ranking(
+    start_date, end_date, org_id, limit: int, max_days: int, include_all: bool = False,
+    period: DashboardTrendGranularity | None = None,
+) -> EmployeeWorkHoursRanking:
     resolved = resolve_range(start_date, end_date, org_id, max_days)
+    if include_all and period is not None and resolved.start is not None and resolved.end is not None:
+        _key, period_start, _period_end = _period_bounds(resolved.end, period)
+        resolved = EffectiveRange(
+            start=max(resolved.start, period_start),
+            end=resolved.end,
+            latest=resolved.latest,
+            org_id=resolved.org_id,
+        )
     rows = [] if resolved.start is None else list(
-        repository.get_ranking_aggregates(resolved.start, resolved.end, resolved.org_id, limit)
+        repository.get_ranking_aggregates(
+            resolved.start, resolved.end, resolved.org_id, None if include_all else limit
+        )
     )
     items = []
     for index, row in enumerate(rows, 1):

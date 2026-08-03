@@ -4,9 +4,14 @@ The dashboard is the authenticated `/dashboard` landing page for read-only Luna 
 
 ## Data flow
 
-`DashboardPage` composes filters, KPIs, the trend chart, employee ranking, attendance exceptions, and shared panel states. It starts one bounded request for each analytics resource plus `/api/v1/dashboard/organizations`. `store.ts` owns draft and applied filters, independent panel states, retries, and section-scoped request IDs/controllers that prevent stale responses without interrupting unrelated panels. Organization options load independently on initialization and Refresh, not on Apply. Typing or selecting a draft filter does not issue analytics requests; Apply validates and promotes the draft, then reloads the four analytics panels.
+`DashboardPage` composes filters, KPIs, an employee comparison chart, employee ranking, attendance exceptions, and shared panel states. The chart requests `include_all=true` from the existing ranking endpoint so every filtered employee is shown, while the detailed ranking table retains its independently limited top-N response. Both use the same backend calculation and ordering. `store.ts` owns draft and applied filters, independent panel states, retries, and section-scoped request IDs/controllers that prevent stale responses without interrupting unrelated panels. Organization options load independently on initialization and Refresh, not on Apply. Typing or selecting a draft filter does not issue analytics requests; Apply validates and promotes the draft, then reloads the dashboard analytics resources.
 
-Trend granularity reloads only the trend, ranking limit reloads only ranking, and exception page/page-size controls reload only exceptions. An inverted date range is rejected locally before requests. Reset clears validation and restores backend defaults, omitting optional dates and organization from the query string.
+Ranking limit reloads the shared comparison chart/table data, and exception page/page-size controls reload only exceptions. An inverted date range is rejected locally before requests. Reset clears validation and restores backend defaults, omitting optional dates and organization from the query string. The compatible trend API remains available but is no longer requested by this page.
+
+The chart period selector defaults to Week and offers Day, Week, Month, and Year.
+Changing it reloads only the all-employee comparison request; the backend derives
+the real period scope from the effective global range. It does not reload or
+change the independently limited ranking table.
 
 The Organization control contains dynamically loaded, sorted Luna organization IDs. `ALL` is the default and means the `org_id` parameter is omitted. The supplied Luna contract has no organization-name table, so no display names are inferred or hardcoded. A failed organization-options request leaves `ALL` usable.
 
@@ -15,7 +20,7 @@ All requests use the OpenAPI-generated SDK from `src/api/generated`. The initial
 ## UI and accessibility
 
 - KPI cards show employee, duration, report-day, and exception totals.
-- The responsive D3 trend chart uses theme tokens, translated units, pointer tooltips, and a screen-reader table with keyboard-focusable periods.
+- The responsive D3 horizontal grouped bar chart compares scheduled, actual, and overtime hours by employee in ranking order. It uses readable horizontal employee labels, theme tokens, translated units, keyboard/pointer tooltips, and bounded vertical scrolling for larger result sets.
 - Ranking and exception data use semantic tables with horizontal containment on narrow screens.
 - Each panel has independent loading, empty, unavailable, generic-error, and retry rendering.
 - English/Arabic, LTR/RTL, light/dark themes, and reduced-motion preferences are supported.
@@ -24,6 +29,6 @@ All requests use the OpenAPI-generated SDK from `src/api/generated`. The initial
 
 ## Tests
 
-`tests/dashboard/dashboard.spec.ts` intercepts authentication and all five dashboard routes. It covers organization loading/failure/race safety, initial loading, omitted default dates, draft/apply/reset behavior, organization scope, ranking-header layout, section-only controls, missing enrichment, three recent exceptions, empty and unavailable responses, partial failures, sanitized errors, Arabic RTL, dark theme, and mobile layout.
+`tests/dashboard/dashboard.spec.ts` intercepts authentication and dashboard routes. It covers employee-name fallback, all three bar series, tooltip values, shared chart/table filtering, stale responses, empty/unavailable states, English/Arabic, LTR/RTL, light/dark themes, and desktop/tablet/mobile layouts.
 
 Production release still requires validation of real Luna field semantics and real SQL Server connectivity; those deployment gates are outside this frontend task.
