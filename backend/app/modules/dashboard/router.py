@@ -79,9 +79,11 @@ def work_hours_ranking(
     org_id: str | None = Query(None, max_length=64),
     limit: int = Query(10, ge=1, le=100),
     include_all: bool = False,
+    period: DashboardTrendGranularity | None = None,
 ):
     return ok(_safe_call(
-        service.get_ranking, start_date, end_date, org_id, limit, RANKING_MAX_DAYS, include_all
+        service.get_ranking,
+        start_date, end_date, org_id, limit, RANKING_MAX_DAYS, include_all, period,
     ))
 
 

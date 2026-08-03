@@ -57,6 +57,7 @@ type State = {
   apply: () => Promise<void>
   reset: () => Promise<void>
   refresh: () => Promise<void>
+  setGranularity: (value: DashboardFilters['granularity']) => Promise<void>
   setRankingLimit: (limit: number) => Promise<void>
   setExceptionPage: (page: number) => Promise<void>
   setExceptionPageSize: (pageSize: number) => Promise<void>
@@ -90,7 +91,7 @@ export const useDashboardStore = create<State>((set, get) => {
     const filters = get().applied; const base = query(filters)
     if (section === 'organizations') return run<SuccessResponseListDashboardOrganizationOption, DashboardOrganizationOption[]>(section, (signal) => fetchOrganizations({ signal }), (data) => data.data, () => false)
     if (section === 'overview') return run<SuccessResponseDashboardOverview, DashboardOverview>(section, (signal) => fetchOverview({ query: base, signal }), (data) => data.data, (data) => data.data_status === 'empty')
-    if (section === 'comparison') return run<SuccessResponseEmployeeWorkHoursRanking, EmployeeWorkHoursRanking>(section, (signal) => fetchRanking({ query: { ...base, include_all: true }, signal }), (data) => data.data, (data) => data.items.length === 0)
+    if (section === 'comparison') return run<SuccessResponseEmployeeWorkHoursRanking, EmployeeWorkHoursRanking>(section, (signal) => fetchRanking({ query: { ...base, include_all: true, period: filters.granularity }, signal }), (data) => data.data, (data) => data.items.length === 0)
     if (section === 'ranking') return run<SuccessResponseEmployeeWorkHoursRanking, EmployeeWorkHoursRanking>(section, (signal) => fetchRanking({ query: { ...base, limit: filters.ranking_limit }, signal }), (data) => data.data, (data) => data.items.length === 0)
     return run<SuccessResponseListAttendanceExceptionItem, ExceptionResult>(section, (signal) => fetchExceptions({ query: { ...base, page: filters.exception_page, page_size: filters.exception_page_size }, signal }), (data) => ({ items: data.data, meta: data.meta! }), (data) => data.items.length === 0)
   }
@@ -108,6 +109,7 @@ export const useDashboardStore = create<State>((set, get) => {
     },
     reset: async () => { const next = defaults(); set({ draft: next, applied: next, filterError: null }); await get().loadAll() },
     refresh: async () => { await Promise.allSettled(sections.map(loadSection)) },
+    setGranularity: async (value) => { set((state) => ({ draft: { ...state.draft, granularity: value }, applied: { ...state.applied, granularity: value } })); await loadSection('comparison') },
     setRankingLimit: async (limit) => { set((state) => ({ draft: { ...state.draft, ranking_limit: limit }, applied: { ...state.applied, ranking_limit: limit } })); await loadSection('ranking') },
     setExceptionPage: async (page) => { set((state) => ({ draft: { ...state.draft, exception_page: page }, applied: { ...state.applied, exception_page: page } })); await loadSection('exceptions') },
     setExceptionPageSize: async (pageSize) => { set((state) => ({ draft: { ...state.draft, exception_page: 1, exception_page_size: pageSize }, applied: { ...state.applied, exception_page: 1, exception_page_size: pageSize } })); await loadSection('exceptions') },

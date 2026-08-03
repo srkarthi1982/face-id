@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as d3 from 'd3'
 import { useI18n } from '../../../infra/locales/I18nContext'
-import type { EmployeeWorkHoursRanking } from '../types'
+import { useDashboardStore } from '../store'
+import type { DashboardFilters, EmployeeWorkHoursRanking } from '../types'
 import { formatDuration, formatNumber } from '../utils'
 
 type Item = EmployeeWorkHoursRanking['items'][number]
@@ -13,9 +14,12 @@ const series: { field: Field; color: string; label: 'scheduled' | 'actual' | 'ov
 ]
 const displayName = (item: Item) => item.person_name?.trim() || item.person_no?.trim() || item.employee_key
 const toHours = (seconds: number) => seconds / 3600
+const periods: DashboardFilters['granularity'][] = ['day', 'week', 'month', 'year']
 
 export default function EmployeeWorkHoursComparisonChart({ data }: { data: EmployeeWorkHoursRanking }) {
   const { t, lang } = useI18n()
+  const period = useDashboardStore((state) => state.applied.granularity)
+  const setGranularity = useDashboardStore((state) => state.setGranularity)
   const host = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(700)
   const [active, setActive] = useState<{ item: Item; field: Field } | null>(null)
@@ -47,7 +51,7 @@ export default function EmployeeWorkHoursComparisonChart({ data }: { data: Emplo
   }, [items, rtl, width])
 
   return <div>
-    <div className="mb-3 flex flex-wrap gap-3 text-xs text-secondary">{series.map(({ color, label }) => <span key={label} className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: `var(${color})` }} />{labels[label]}</span>)}</div>
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><div className="flex flex-wrap gap-3 text-xs text-secondary">{series.map(({ color, label }) => <span key={label} className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: `var(${color})` }} />{labels[label]}</span>)}</div><select aria-label={t('nav.dashboard.chart.granularity')} value={period} onChange={(event) => void setGranularity(event.target.value as DashboardFilters['granularity'])} className="min-h-10 rounded-lg border border-bd bg-surface-2 px-3">{periods.map((value) => <option key={value} value={value}>{t(`nav.dashboard.granularity.${value}`)}</option>)}</select></div>
     <div ref={host} className="relative max-h-[32rem] w-full overflow-auto" data-testid="employee-comparison-scroll">
       <svg role="img" aria-labelledby="employee-chart-title employee-chart-desc" width={width} height={chart.height} className="min-w-full">
         <title id="employee-chart-title">{t('nav.dashboard.chart.title')}</title>

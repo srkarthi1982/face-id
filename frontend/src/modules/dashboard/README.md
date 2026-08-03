@@ -8,6 +8,11 @@ The dashboard is the authenticated `/dashboard` landing page for read-only Luna 
 
 Ranking limit reloads the shared comparison chart/table data, and exception page/page-size controls reload only exceptions. An inverted date range is rejected locally before requests. Reset clears validation and restores backend defaults, omitting optional dates and organization from the query string. The compatible trend API remains available but is no longer requested by this page.
 
+The chart period selector defaults to Week and offers Day, Week, Month, and Year.
+Changing it reloads only the all-employee comparison request; the backend derives
+the real period scope from the effective global range. It does not reload or
+change the independently limited ranking table.
+
 The Organization control contains dynamically loaded, sorted Luna organization IDs. `ALL` is the default and means the `org_id` parameter is omitted. The supplied Luna contract has no organization-name table, so no display names are inferred or hardcoded. A failed organization-options request leaves `ALL` usable.
 
 All requests use the OpenAPI-generated SDK from `src/api/generated`. The initial request omits dates so Luna determines the effective source range, which the page then displays. Durations remain integer seconds in state and are converted only for localized display. The module does not query Luna or raw clocks directly, calculate official work hours, or use polling, server-sent events, or WebSockets.

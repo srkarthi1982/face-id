@@ -64,7 +64,9 @@ All routes are under `/api/v1/dashboard` and require exactly
 Ranking remains top-10 by default and accepts its existing bounded `limit`.
 The additive `include_all=true` mode returns every employee in the filtered
 date/organization scope for the comparison chart, using the same deterministic
-actual-work descending order and calculations.
+actual-work descending order and calculations. Chart requests may also pass
+`period=day|week|month|year`; the server clips that period to the resolved global
+range ending on its effective end date without changing ordinary ranking calls.
 
 Official duration metrics come only from `dbo.saas_ca_report_daily` and remain
 integer seconds. Reported exception counts and records come only from

@@ -184,6 +184,25 @@ def test_include_all_ranking_mode_removes_sql_limit_without_changing_default(mon
     assert "row_position <= :limit" not in all_sql and "limit" not in all_parameters
 
 
+@pytest.mark.parametrize(
+    "period,expected_start",
+    [
+        (DashboardTrendGranularity.DAY, date(2026, 7, 30)),
+        (DashboardTrendGranularity.WEEK, date(2026, 7, 27)),
+        (DashboardTrendGranularity.MONTH, date(2026, 7, 1)),
+        (DashboardTrendGranularity.YEAR, date(2026, 1, 1)),
+    ],
+)
+def test_employee_comparison_period_changes_only_all_employee_date_scope(monkeypatch, period, expected_start):
+    captured = []
+    monkeypatch.setattr(repository, "get_latest_report_date", lambda org_id=None: date(2026, 7, 30))
+    monkeypatch.setattr(repository, "get_ranking_aggregates", lambda start, end, org, limit: captured.append((start, end, limit)) or [])
+    service.get_ranking(
+        date(2026, 1, 1), date(2026, 7, 30), "ORG", 10, 3660, True, period
+    )
+    assert captured == [(expected_start, date(2026, 7, 30), None)]
+
+
 def test_overview_uses_latest_default_range_and_exact_vendor_sums(monkeypatch):
     rows = [_daily(date(2026, 1, 30), actual=100), _daily(date(2026, 1, 31), "P2", "002", 80)]
     rows[1]["plan_work_time"] = None
@@ -629,7 +648,7 @@ def test_every_route_uses_one_router_level_permission_guard(route):
 def test_http_contract_exposes_only_fixed_query_parameters():
     app = FastAPI()
     app.include_router(dashboard_router)
-    allowed = {"start_date", "end_date", "org_id", "granularity", "limit", "include_all", "page", "page_size"}
+    allowed = {"start_date", "end_date", "org_id", "granularity", "limit", "include_all", "period", "page", "page_size"}
     actual = {
         parameter["name"]
         for path in app.openapi()["paths"].values()

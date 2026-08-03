@@ -46,6 +46,7 @@ test('renders employee comparison bars, names, tooltips, and the ranking table',
   page.on('request', (request) => { if (request.url().includes('/api/v1/dashboard/')) requests.push(new URL(request.url())) })
   await page.goto('/dashboard')
   await expect(page.getByRole('heading', { name: 'Employee work-hours comparison' })).toBeVisible()
+  await expect(page.getByLabel('Chart period')).toHaveValue('week')
   await expect(page.getByTestId('employee-chart-name')).toHaveCount(12)
   await expect(page.getByTestId('employee-chart-name').filter({ hasText: 'Amina Noor' })).toBeVisible()
   await expect(page.getByTestId('employee-chart-name').filter({ hasText: 'E-02' })).toBeVisible()
@@ -77,6 +78,22 @@ test('global dates and organization refresh the chart ranking request', async ({
   await page.getByRole('button', { name: 'Apply filters' }).click(); await expect.poll(() => requests.length).toBe(2)
   expect(requests.every((url) => url.searchParams.get('org_id') === 'ORG-2' && url.searchParams.get('start_date') === '2026-07-10')).toBeTruthy()
   expect(requests.some((url) => url.searchParams.get('include_all') === 'true')).toBeTruthy()
+})
+
+test('Day Week Month Year genuinely rescope only the all-employee chart request', async ({ page }) => {
+  await mockApp(page); const requests: URL[] = []
+  page.on('request', (request) => { if (request.url().includes('/work-hours/ranking')) requests.push(new URL(request.url())) })
+  await page.goto('/dashboard'); await expect(page.getByTestId('employee-chart-name')).toHaveCount(12); requests.length = 0
+  const selector = page.getByLabel('Chart period')
+  for (const period of ['day', 'month', 'year', 'week']) {
+    await selector.selectOption(period); await expect.poll(() => requests.length).toBe(1)
+    expect(requests[0].searchParams.get('period')).toBe(period)
+    expect(requests[0].searchParams.get('include_all')).toBe('true')
+    expect(requests[0].searchParams.has('limit')).toBeFalsy()
+    await expect(page.getByTestId('employee-chart-name').filter({ hasText: 'Employee Beyond Ten 12' })).toBeVisible()
+    await expect(page.getByLabel('Rows', { exact: true })).toHaveValue('10')
+    requests.length = 0
+  }
 })
 
 test('ranking limit refreshes the shared chart and table without losing draft organization', async ({ page }) => {
