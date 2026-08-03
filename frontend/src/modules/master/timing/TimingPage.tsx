@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { HiOutlineClock, HiOutlinePencil, HiOutlinePlus, HiOutlineTrash } from 'react-icons/hi2'
 import { useShallow } from 'zustand/react/shallow'
 import SectionHeader from '../../../infra/shared/components/SectionHeader'
+import useAuthStore, { selectUserPermissions } from '../../../infra/auth/useAuthStore'
 import { useI18n } from '../../../infra/locales/I18nContext'
 import { useTimingStore } from './store'
 import type { TimingCreate, Weekday } from '../types'
@@ -52,6 +53,8 @@ function shortTime(value: string) {
 
 export default function TimingPage() {
     const { t } = useI18n()
+    const permissions = useAuthStore(selectUserPermissions)
+    const hasWrite = permissions.has('timing:write')
     const { items, departments, isLoading, fetch, create, update, remove } = useTimingStore(useShallow((state) => ({
         items: state.items,
         departments: state.departments,
@@ -135,7 +138,7 @@ export default function TimingPage() {
                 eyebrow={t('common.management')}
                 title={t('nav.master.timings.title')}
                 description={t('nav.master.timings.description')}
-                actions={<button onClick={openCreate} className="inline-flex items-center gap-2 rounded-[9px] bg-accent px-4 py-2 text-sm font-semibold text-white"><HiOutlinePlus />{t('nav.master.timings.addTiming')}</button>}
+                actions={hasWrite ? <button onClick={openCreate} className="inline-flex items-center gap-2 rounded-[9px] bg-accent px-4 py-2 text-sm font-semibold text-white"><HiOutlinePlus />{t('nav.master.timings.addTiming')}</button> : undefined}
             />
 
             <div className="card h-full overflow-auto p-0">
@@ -147,7 +150,7 @@ export default function TimingPage() {
                             <tr>
                                 {columns.map((column) => <th key={column.key} className="px-4 py-3 text-start font-medium">{t(column.label)}</th>)}
                                 <th className="px-4 py-3 text-start font-medium">{t('nav.master.common.active')}</th>
-                                <th className="px-4 py-3 text-end font-medium">{t('common.actions')}</th>
+                                {hasWrite && <th className="px-4 py-3 text-end font-medium">{t('common.actions')}</th>}
                             </tr>
                         </thead>
                         <tbody>
@@ -159,12 +162,14 @@ export default function TimingPage() {
                                     <td className="px-4 py-3">{shortTime(item.start_time)}</td>
                                     <td className="px-4 py-3">{shortTime(item.end_time)}</td>
                                     <td className="px-4 py-3">{item.is_active ? t('common.active') : t('common.inactive')}</td>
-                                    <td className="px-4 py-3">
-                                        <div className="flex justify-end gap-1">
-                                            <button aria-label={t('common.edit')} title={t('common.edit')} onClick={() => openEdit(item)} className="rounded-lg p-2 hover:bg-surface-2"><HiOutlinePencil /></button>
-                                            <button aria-label={t('common.delete')} title={t('common.delete')} onClick={() => setConfirmDeleteId(item.id)} className="rounded-lg p-2 text-red-500 hover:bg-red-500/10"><HiOutlineTrash /></button>
-                                        </div>
-                                    </td>
+                                    {hasWrite && (
+                                        <td className="px-4 py-3">
+                                            <div className="flex justify-end gap-1">
+                                                <button aria-label={t('common.edit')} title={t('common.edit')} onClick={() => openEdit(item)} className="rounded-lg p-2 hover:bg-surface-2"><HiOutlinePencil /></button>
+                                                <button aria-label={t('common.delete')} title={t('common.delete')} onClick={() => setConfirmDeleteId(item.id)} className="rounded-lg p-2 text-red-500 hover:bg-red-500/10"><HiOutlineTrash /></button>
+                                            </div>
+                                        </td>
+                                    )}
                                 </tr>
                             ))}
                         </tbody>

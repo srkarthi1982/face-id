@@ -80,15 +80,24 @@ def upgrade() -> None:
     )
     op.execute("SELECT setval(pg_get_serial_sequence('departments', 'id'), GREATEST((SELECT COALESCE(MAX(id), 0) FROM departments) + 1, 1), false)")
 
-    op.drop_constraint("fk_personnel_department_id_locations", "personnel", type_="foreignkey")
     op.execute(
         """
-        UPDATE personnel
-        SET department_id = NULL
-        WHERE department_id IS NOT NULL
-          AND department_id NOT IN (SELECT id FROM departments)
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM personnel p
+                LEFT JOIN departments d ON d.id = p.department_id
+                WHERE p.department_id IS NOT NULL
+                  AND d.id IS NULL
+            ) THEN
+                RAISE EXCEPTION
+                    'Cannot upgrade 4f6a2c9d8b13: personnel.department_id contains values that cannot be mapped to departments.';
+            END IF;
+        END$$;
         """
     )
+    op.drop_constraint("fk_personnel_department_id_locations", "personnel", type_="foreignkey")
     op.create_foreign_key(
         "fk_personnel_department_id_departments",
         "personnel",
@@ -141,6 +150,16 @@ def upgrade() -> None:
         ON CONFLICT (code) DO NOTHING
         """
     )
+    op.execute(
+        """
+        INSERT INTO role_permissions (role_id, permission_id)
+        SELECT r.id, p.id
+        FROM roles r
+        JOIN permissions p ON p.code IN ('department:read', 'department:write', 'timing:read', 'timing:write')
+        WHERE lower(r.name) = 'admin'
+        ON CONFLICT DO NOTHING
+        """
+    )
 
 
 def downgrade() -> None:
@@ -162,15 +181,24 @@ def downgrade() -> None:
     ):
         op.drop_index(index_name, table_name="recognition_records", if_exists=True)
 
-    op.drop_constraint("fk_personnel_department_id_departments", "personnel", type_="foreignkey")
     op.execute(
         """
-        UPDATE personnel
-        SET department_id = NULL
-        WHERE department_id IS NOT NULL
-          AND department_id NOT IN (SELECT id FROM locations)
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM personnel p
+                LEFT JOIN locations l ON l.id = p.department_id
+                WHERE p.department_id IS NOT NULL
+                  AND l.id IS NULL
+            ) THEN
+                RAISE EXCEPTION
+                    'Cannot downgrade 4f6a2c9d8b13: personnel.department_id references Department rows that do not exist in locations. Reassign those personnel to legacy Location-backed department IDs before downgrade.';
+            END IF;
+        END$$;
         """
     )
+    op.drop_constraint("fk_personnel_department_id_departments", "personnel", type_="foreignkey")
     op.create_foreign_key(
         "fk_personnel_department_id_locations",
         "personnel",

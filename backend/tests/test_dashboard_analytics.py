@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core import deps
 from app.core.database import Base, get_db
-from app.core.permissions import PermissionCode
+from app.core.permissions import PermissionCode, sync_permissions_to_db
 from app.modules import import_all_models
 from app.modules.dashboard import repository, router as dashboard_router, service
 from app.modules.dashboard.schemas import DashboardTrendGranularity
@@ -21,6 +21,7 @@ from app.modules.device.models import Device
 from app.modules.master.models import Department, Timing, Weekday
 from app.modules.personnel.models import Personnel
 from app.modules.recognition_records.models import RecognitionRecord
+from app.modules.users.models import Permission, Role, User
 
 
 import_all_models()
@@ -61,11 +62,12 @@ def _seed_department(db: Session, *, active: bool = True, start_day=Weekday.MOND
     return department
 
 
-def _seed_person(db: Session, department: Department, *, key="P1", active=True) -> Personnel:
+def _seed_person(db: Session, department: Department, *, key="P1", active=True, internal: str | None | object = object()) -> Personnel:
+    internal_key = key if not isinstance(internal, str) and internal is not None else internal
     person = Personnel(
         emp_no=f"E-{key}",
-        person_id_internal=key,
-        person_id_device=f"D-{key}",
+        person_id_internal=internal_key,
+        person_id_device=f"D-{key}" if internal_key else None,
         full_name=f"Person {key}",
         gender=0,
         department_id=department.id,
@@ -139,6 +141,20 @@ def test_absent_missing_pair_late_and_early_exceptions_are_computed(db: Session)
     assert all(item.department_id == department.id for item in items)
 
 
+def test_personnel_without_recognition_identity_are_scheduled_absent(db: Session):
+    department = _seed_department(db)
+    person = _seed_person(db, department, key="NO-ID", internal=None)
+    overview = service.get_overview(db, date(2026, 1, 5), date(2026, 1, 5), department.id, 366)
+    ranking = service.get_ranking(db, date(2026, 1, 5), date(2026, 1, 5), department.id, 10, 366, True, None)
+    items, meta = service.get_attendance_exceptions(db, date(2026, 1, 5), date(2026, 1, 5), department.id, 1, 20, 366)
+    assert overview.report_row_count == 1
+    assert overview.absent_seconds == 8 * 3600
+    assert ranking.items[0].employee_key == f"personnel:{person.id}"
+    assert ranking.items[0].person_name == "Person NO-ID"
+    assert meta.total == 1
+    assert items[0].exception_type == "ABSENT"
+
+
 def test_working_days_and_missing_timing_exclusion(db: Session):
     sunday_to_thursday = _seed_department(db, start_day=Weekday.SUNDAY, end_day=Weekday.THURSDAY)
     no_timing = Department(name="No Timing", path="/No Timing", is_active=True)
@@ -154,6 +170,75 @@ def test_working_days_and_missing_timing_exclusion(db: Session):
     assert sunday.employee_count == 1
 
 
+def test_latest_date_uses_configured_working_day_semantics(db: Session):
+    department = _seed_department(db, start_day=Weekday.SUNDAY, end_day=Weekday.THURSDAY)
+    _seed_person(db, department)
+    _event(db, "P1", datetime(2026, 1, 8, 4, 0, tzinfo=timezone.utc))
+    _event(db, "P1", datetime(2026, 1, 8, 12, 0, tzinfo=timezone.utc))
+    _event(db, "P1", datetime(2026, 1, 9, 4, 0, tzinfo=timezone.utc))
+    assert repository.get_latest_report_date(db, department.id) == date(2026, 1, 8)
+    overview = service.get_overview(db, None, None, department.id, 366)
+    assert overview.effective_end_date == date(2026, 1, 8)
+    assert overview.report_row_count >= 1
+
+
+def test_inactive_personnel_department_and_timing_are_excluded(db: Session):
+    active_department = _seed_department(db)
+    inactive_department = _seed_department(db, active=False)
+    disabled_timing_department = _seed_department(db)
+    db.query(Timing).filter(Timing.department_id == disabled_timing_department.id).update({"is_active": False})
+    db.commit()
+    _seed_person(db, active_department, key="ACTIVE")
+    _seed_person(db, active_department, key="INACTIVE", active=False)
+    _seed_person(db, inactive_department, key="INACTIVE-DEPT")
+    _seed_person(db, disabled_timing_department, key="NO-TIMING")
+    overview = service.get_overview(db, date(2026, 1, 5), date(2026, 1, 5), None, 366)
+    assert overview.report_row_count == 1
+    assert overview.employee_count == 1
+
+
+def test_null_event_time_and_non_success_events_are_ignored(db: Session):
+    department = _seed_department(db)
+    _seed_person(db, department)
+    db.add(RecognitionRecord(
+        device_id=1,
+        person_id_internal="P1",
+        person_id_device="P1",
+        record_type="face",
+        event_type="success",
+        event_name="success",
+        event_time=None,
+        source="callback",
+    ))
+    db.commit()
+    _event(db, "P1", datetime(2026, 1, 5, 4, 0, tzinfo=timezone.utc), event_type="failed")
+    overview = service.get_overview(db, date(2026, 1, 5), date(2026, 1, 5), department.id, 366)
+    assert overview.report_row_count == 1
+    assert overview.absent_seconds == 8 * 3600
+
+
+def test_three_or_more_events_use_earliest_check_in_and_latest_check_out(db: Session):
+    department = _seed_department(db)
+    _seed_person(db, department)
+    _event(db, "P1", datetime(2026, 1, 5, 4, 5, tzinfo=timezone.utc))
+    _event(db, "P1", datetime(2026, 1, 5, 8, 0, tzinfo=timezone.utc))
+    _event(db, "P1", datetime(2026, 1, 5, 12, 30, tzinfo=timezone.utc))
+    overview = service.get_overview(db, date(2026, 1, 5), date(2026, 1, 5), department.id, 366)
+    assert overview.actual_seconds == 8 * 3600 + 25 * 60
+    assert overview.overtime_seconds == 25 * 60
+
+
+def test_circular_weekday_range_is_supported(db: Session):
+    department = _seed_department(db, start_day=Weekday.FRIDAY, end_day=Weekday.MONDAY)
+    _seed_person(db, department)
+    friday = service.get_overview(db, date(2026, 1, 9), date(2026, 1, 9), department.id, 366)
+    monday = service.get_overview(db, date(2026, 1, 12), date(2026, 1, 12), department.id, 366)
+    tuesday = service.get_overview(db, date(2026, 1, 13), date(2026, 1, 13), department.id, 366)
+    assert friday.report_row_count == 1
+    assert monday.report_row_count == 1
+    assert tuesday.report_row_count == 0
+
+
 def test_ranking_include_all_and_stable_top_n(db: Session):
     department = _seed_department(db)
     for index in range(12):
@@ -167,6 +252,31 @@ def test_ranking_include_all_and_stable_top_n(db: Session):
     assert len(top.items) == 10
     assert len(all_rows.items) == 12
     assert all_rows.items[0].actual_seconds > all_rows.items[-1].actual_seconds
+
+
+def test_ranking_ties_are_deterministic(db: Session):
+    department = _seed_department(db)
+    _seed_person(db, department, key="B")
+    _seed_person(db, department, key="A")
+    for key in ("A", "B"):
+        _event(db, key, datetime(2026, 1, 5, 4, 0, tzinfo=timezone.utc))
+        _event(db, key, datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc))
+    ranking = service.get_ranking(db, date(2026, 1, 5), date(2026, 1, 5), department.id, 10, 366, True, None)
+    assert [item.person_no for item in ranking.items] == ["E-A", "E-B"]
+
+
+def test_day_month_and_year_ranking_scopes(db: Session):
+    department = _seed_department(db)
+    _seed_person(db, department)
+    for day, checkout_hour in ((5, 12), (6, 10), (12, 11)):
+        _event(db, "P1", datetime(2026, 1, day, 4, 0, tzinfo=timezone.utc))
+        _event(db, "P1", datetime(2026, 1, day, checkout_hour, 0, tzinfo=timezone.utc))
+    day_rank = service.get_ranking(db, date(2026, 1, 1), date(2026, 1, 12), department.id, 10, 366, True, DashboardTrendGranularity.DAY)
+    month_rank = service.get_ranking(db, date(2026, 1, 1), date(2026, 1, 12), department.id, 10, 366, True, DashboardTrendGranularity.MONTH)
+    year_rank = service.get_ranking(db, date(2026, 1, 1), date(2026, 1, 12), department.id, 10, 366, True, DashboardTrendGranularity.YEAR)
+    assert day_rank.items[0].report_day_count == 1
+    assert month_rank.items[0].report_day_count == 8
+    assert year_rank.items[0].report_day_count == 8
 
 
 def test_trend_periods_are_clipped_to_applied_range(db: Session):
@@ -185,6 +295,34 @@ def test_trend_periods_are_clipped_to_applied_range(db: Session):
     assert trend.points[0].period_start == date(2026, 1, 5)
     assert trend.points[0].period_end == date(2026, 1, 7)
     assert trend.points[0].report_row_count == 3
+
+
+def test_invalid_and_excessive_ranges_raise_safe_errors(db: Session):
+    department = _seed_department(db)
+    with pytest.raises(service.DashboardRangeError):
+        service.get_overview(db, date(2026, 1, 6), date(2026, 1, 5), department.id, 366)
+    with pytest.raises(service.DashboardRangeError):
+        service.get_overview(db, date(2026, 1, 1), date(2027, 1, 2), department.id, 366)
+
+
+def test_empty_default_range_has_no_latest_date(db: Session):
+    _seed_department(db)
+    overview = service.get_overview(db, None, None, None, 366)
+    assert overview.data_status == "empty"
+    assert overview.effective_start_date is None
+    assert overview.effective_end_date is None
+
+
+def test_exception_pagination_and_order_are_deterministic(db: Session):
+    department = _seed_department(db)
+    _seed_person(db, department, key="B")
+    _seed_person(db, department, key="A")
+    items, meta = service.get_attendance_exceptions(db, date(2026, 1, 5), date(2026, 1, 6), department.id, 2, 1, 366)
+    assert meta.total == 4
+    assert meta.pages == 4
+    assert len(items) == 1
+    assert items[0].report_date == date(2026, 1, 5)
+    assert items[0].person_no == "E-B"
 
 
 def test_dashboard_routes_reject_missing_token():
@@ -207,13 +345,55 @@ def test_dashboard_routes_require_analytics_read(db: Session):
     assert response.status_code == 403
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/dashboard/departments",
+        "/dashboard/overview",
+        "/dashboard/work-hours/trend",
+        "/dashboard/work-hours/ranking",
+        "/dashboard/attendance-exceptions",
+    ],
+)
+def test_all_dashboard_routes_require_analytics_read(db: Session, path: str):
+    app = FastAPI()
+    app.include_router(dashboard_router)
+    guard = dashboard_router.routes[0].dependencies[0].dependency
+    app.dependency_overrides[guard] = lambda: object()
+    app.dependency_overrides[get_db] = lambda: db
+    response = TestClient(app).get(path)
+    assert response.status_code == 200
+
+
 def test_dashboard_routes_use_department_parameters(db: Session):
     app = FastAPI()
     app.include_router(dashboard_router)
     guard = dashboard_router.routes[0].dependencies[0].dependency
     app.dependency_overrides[guard] = lambda: object()
     app.dependency_overrides[get_db] = lambda: db
-    response = TestClient(app).get("/dashboard/departments")
+    _seed_department(db)
+    response = TestClient(app).get("/dashboard/work-hours/ranking?department_id=1&include_all=true&period=day")
     assert response.status_code == 200
-    assert response.json()["data"] == []
+    assert response.json()["data"]["department_id"] == 1
     assert PermissionCode.ANALYTICS_READ.value == "analytics:read"
+
+
+def test_dashboard_routes_are_read_only():
+    assert all(route.methods == {"GET"} for route in dashboard_router.routes)
+
+
+def test_sync_permissions_grants_existing_admin_roles_and_invalidates_cache(db: Session):
+    admin_role = Role(name="admin", description="Admin", is_system=True)
+    user = User(username="admin-user", is_active=True)
+    user.roles.append(admin_role)
+    db.add_all([admin_role, user, Permission(code="admin:full", name="Full Admin", module="admin")])
+    db.commit()
+    deps.invalidate_permission_cache()
+
+    assert PermissionCode.TIMING_WRITE.value not in deps.get_user_permission_codes(user, db)
+    sync_permissions_to_db(db)
+    permissions = deps.get_user_permission_codes(user, db)
+    assert PermissionCode.DEPARTMENT_READ.value in permissions
+    assert PermissionCode.DEPARTMENT_WRITE.value in permissions
+    assert PermissionCode.TIMING_READ.value in permissions
+    assert PermissionCode.TIMING_WRITE.value in permissions

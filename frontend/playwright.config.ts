@@ -1,4 +1,8 @@
 import { defineConfig, devices } from '@playwright/test'
+import { existsSync } from 'node:fs'
+
+const officeChromePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || (existsSync(officeChromePath) ? officeChromePath : undefined)
 
 export default defineConfig({
   testDir: './tests',
@@ -22,7 +26,7 @@ export default defineConfig({
         browserName: 'chromium',
         // storageState: 'tests/.auth/admin.json', // removed
         launchOptions: {
-          executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+          executablePath: chromiumExecutablePath,
           args: [
             '--disable-blink-features=AutomationControlled',
             '--no-first-run',

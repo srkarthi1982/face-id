@@ -79,7 +79,7 @@ def get_departments(db: Session) -> list[dict]:
 
 def get_latest_report_date(db: Session, department_id: int | None = None) -> date | None:
     query = (
-        db.query(RecognitionRecord.event_time)
+        db.query(RecognitionRecord.event_time, Timing.start_day, Timing.end_day)
         .join(Personnel, Personnel.person_id_internal == RecognitionRecord.person_id_internal)
         .join(Department, Department.id == Personnel.department_id)
         .join(Timing, and_(Timing.department_id == Department.id, Timing.is_active.is_(True)))
@@ -93,8 +93,11 @@ def get_latest_report_date(db: Session, department_id: int | None = None) -> dat
     )
     if department_id is not None:
         query = query.filter(Department.id == department_id)
-    latest = query.order_by(RecognitionRecord.event_time.desc()).limit(1).scalar()
-    return _to_dubai(latest).date() if latest else None
+    for event_time, start_day, end_day in query.order_by(RecognitionRecord.event_time.desc(), RecognitionRecord.id.desc()).all():
+        local_date = _to_dubai(event_time).date()
+        if local_date.weekday() in weekday_values(start_day, end_day):
+            return local_date
+    return None
 
 
 def build_employee_days(db: Session, start_date: date, end_date: date, department_id: int | None = None) -> list[EmployeeDay]:
@@ -117,7 +120,6 @@ def build_employee_days(db: Session, start_date: date, end_date: date, departmen
         .filter(
             Personnel.is_active.is_(True),
             Personnel.department_id.in_(timing_by_department.keys()),
-            Personnel.person_id_internal.isnot(None),
         )
         .order_by(Personnel.emp_no, Personnel.id)
         .all()
@@ -127,18 +129,20 @@ def build_employee_days(db: Session, start_date: date, end_date: date, departmen
 
     event_start_utc, event_end_utc = local_day_bounds_utc(start_date, end_date)
     person_keys = [person.person_id_internal for person in personnel if person.person_id_internal]
-    events = (
-        db.query(RecognitionRecord)
-        .filter(
-            RecognitionRecord.event_type == "success",
-            RecognitionRecord.person_id_internal.in_(person_keys),
-            RecognitionRecord.event_time.isnot(None),
-            RecognitionRecord.event_time >= event_start_utc,
-            RecognitionRecord.event_time < event_end_utc,
+    events = []
+    if person_keys:
+        events = (
+            db.query(RecognitionRecord)
+            .filter(
+                RecognitionRecord.event_type == "success",
+                RecognitionRecord.person_id_internal.in_(person_keys),
+                RecognitionRecord.event_time.isnot(None),
+                RecognitionRecord.event_time >= event_start_utc,
+                RecognitionRecord.event_time < event_end_utc,
+            )
+            .order_by(RecognitionRecord.person_id_internal, RecognitionRecord.event_time, RecognitionRecord.id)
+            .all()
         )
-        .order_by(RecognitionRecord.person_id_internal, RecognitionRecord.event_time, RecognitionRecord.id)
-        .all()
-    )
 
     events_by_person_day: dict[tuple[str, date], list[RecognitionRecord]] = {}
     for event in events:
@@ -185,7 +189,7 @@ def build_employee_days(db: Session, start_date: date, end_date: date, departmen
                 personnel_id=person.id,
                 department_id=person.department_id,
                 department_name=person.department.name if person.department else "",
-                employee_key=person.person_id_internal or person.emp_no or str(person.id),
+                employee_key=f"personnel:{person.id}",
                 person_id=person.person_id_internal,
                 person_no=person.emp_no,
                 person_name=person.full_name,

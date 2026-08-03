@@ -94,13 +94,19 @@ def sync_permissions_to_db(db) -> None:
     Only adds missing permissions; never deletes or overwrites existing ones.
     Resets the PostgreSQL sequence first to avoid ID collisions with
     manually-assigned IDs (34-40) from migration f6dc191f9a13.
+
+    Also grants any missing DEFAULT_ROLE_PERMISSIONS to existing roles. The
+    permission guard matches exact codes only, so "admin:full" is not a
+    wildcard for newly registered permissions.
     """
     import sqlalchemy as sa
-    from app.modules.users.models import Permission
+    from app.core.deps import invalidate_permission_cache
+    from app.modules.users.models import Permission, Role
 
-    max_id = db.execute(sa.text("SELECT COALESCE(MAX(id), 0) FROM permissions")).scalar_one()
-    db.execute(sa.text(f"SELECT setval('permissions_id_seq', GREATEST({max_id} + 1, 1), false)"))
-    db.commit()
+    if db.bind and db.bind.dialect.name == "postgresql":
+        max_id = db.execute(sa.text("SELECT COALESCE(MAX(id), 0) FROM permissions")).scalar_one()
+        db.execute(sa.text(f"SELECT setval('permissions_id_seq', GREATEST({max_id} + 1, 1), false)"))
+        db.commit()
 
     existing = {p.code for p in db.query(Permission.code).all()}
     missing = []
@@ -118,3 +124,20 @@ def sync_permissions_to_db(db) -> None:
     if missing:
         db.add_all(missing)
         db.commit()
+
+    permissions_by_code = {p.code: p for p in db.query(Permission).all()}
+    roles_by_name = {r.name.lower(): r for r in db.query(Role).all()}
+    granted_any = False
+    for role_name, default_codes in DEFAULT_ROLE_PERMISSIONS.items():
+        role = roles_by_name.get(role_name.lower())
+        if not role:
+            continue
+        held = {p.code for p in role.permissions}
+        for code in default_codes:
+            permission = permissions_by_code.get(str(code.value))
+            if permission and permission.code not in held:
+                role.permissions.append(permission)
+                granted_any = True
+    if granted_any:
+        db.commit()
+        invalidate_permission_cache()

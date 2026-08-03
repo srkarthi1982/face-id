@@ -684,15 +684,14 @@ def update_timing(db: Session, timing_id: int, timing: TimingUpdate):
     db_timing = get_timing_by_id(db, timing_id)
     update_data = timing.model_dump(exclude_unset=True)
     department_id = update_data.get("department_id", db_timing.department_id)
-    if "department_id" in update_data:
-        department = get_department_by_id(db, department_id)
-        if not department.is_active:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Department must be active")
     start_time = update_data.get("start_time", db_timing.start_time)
     end_time = update_data.get("end_time", db_timing.end_time)
     _validate_timing_window(start_time, end_time)
     is_active = update_data.get("is_active", db_timing.is_active)
     if is_active:
+        department = get_department_by_id(db, department_id)
+        if not department.is_active:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Department must be active")
         _validate_active_timing_unique(db, department_id, timing_id)
     for field, value in update_data.items():
         setattr(db_timing, field, value)
