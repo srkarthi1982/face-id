@@ -239,13 +239,14 @@ def seed_personnel(
     ]
     result: dict[str, Personnel] = {}
     for index, (person_id, emp_no, name, gender, email, phone, position, dob, hired) in enumerate(specs, start=1):
+        department_id = departments["security"].id if index in (2, 5) else departments["headquarters"].id
         person, created = get_or_create(
             db,
             Personnel,
             person_id_internal=person_id,
             defaults={
                 "org_id": locations["base"].id,
-                "department_id": departments["security"].id if index in (2, 5) else departments["headquarters"].id,
+                "department_id": department_id,
                 "emp_no": emp_no,
                 "person_id_device": f"DEV-{1000 + index}",
                 "full_name": name,
@@ -265,6 +266,9 @@ def seed_personnel(
                 "is_active": True,
             },
         )
+        if not created and person.department_id != department_id:
+            person.department_id = department_id
+            db.add(person)
         counts["personnel"] += int(created)
         result[person_id] = person
     return result
