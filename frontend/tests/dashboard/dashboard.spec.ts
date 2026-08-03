@@ -18,7 +18,7 @@ const allEmployees = [
   })),
 ]
 const exception = { id: 1, org_id: 'ORG-1', person_id: 'P-01', person_no: 'E-01', person_name: 'Amina Noor', report_date: '2026-07-30', clock_time: '2026-07-30T08:10:00', device_key: 'D-01', device_name: 'Main Gate' }
-const organizations = ['FAST', 'ORG-1', 'ORG-2', 'SLOW'].map((org_id) => ({ org_id }))
+const organizations = ['FAST', 'ORG-1', 'ORG-2', 'ORG-NEW', 'SLOW'].map((org_id) => ({ org_id }))
 type Mode = 'available' | 'empty' | 'unavailable'
 
 async function respond(route: Route, mode: Mode) {
@@ -33,7 +33,11 @@ async function respond(route: Route, mode: Mode) {
 }
 
 async function mockApp(page: Page, mode: Mode = 'available') {
-  await page.addInitScript(() => { localStorage.setItem('access_token', 'dashboard-test-token'); localStorage.setItem('lang', 'en'); localStorage.setItem('theme', 'light') })
+  await page.addInitScript(() => {
+    localStorage.setItem('access_token', 'dashboard-test-token')
+    if (!localStorage.getItem('lang')) localStorage.setItem('lang', 'en')
+    if (!localStorage.getItem('theme')) localStorage.setItem('theme', 'light')
+  })
   await page.route('**/api/v1/auth/me**', async (route) => {
     if (new URL(route.request().url()).pathname.endsWith('/permissions')) return route.fulfill({ json: { success: true, data: ['analytics:read'] } })
     return route.fulfill({ json: { success: true, data: { id: 1, email: 'dashboard@example.test', username: 'dashboard', roles: ['viewer'], auth_provider: 'local', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', version: 1 } } })
@@ -119,7 +123,91 @@ test('empty, unavailable, and stale-request states remain isolated', async ({ pa
   await mockApp(page, 'empty'); await page.goto('/dashboard'); await expect(page.getByText('No attendance analytics match these filters.').first()).toBeVisible()
   await page.unroute('**/api/v1/dashboard/**'); await page.route('**/api/v1/dashboard/**', async (route) => respond(route, 'unavailable')); await page.getByRole('button', { name: 'Refresh' }).click()
   await expect(page.getByText('Attendance analytics are temporarily unavailable.').first()).toBeVisible()
-  await page.unroute('**/api/v1/dashboard/**'); await page.route('**/api/v1/dashboard/**', async (route) => { const url = new URL(route.request().url()); if (url.pathname.endsWith('/work-hours/ranking') && url.searchParams.get('org_id') === 'SLOW') await new Promise((resolve) => setTimeout(resolve, 300)); return respond(route, 'available') }); await page.getByRole('button', { name: 'Refresh' }).click(); await expect(page.getByLabel('Organization').locator('option')).toHaveCount(5)
+  await page.unroute('**/api/v1/dashboard/**'); await page.route('**/api/v1/dashboard/**', async (route) => { const url = new URL(route.request().url()); if (url.pathname.endsWith('/work-hours/ranking') && url.searchParams.get('org_id') === 'SLOW') await new Promise((resolve) => setTimeout(resolve, 300)); return respond(route, 'available') }); await page.getByRole('button', { name: 'Refresh' }).click(); await expect(page.getByLabel('Organization').locator('option')).toHaveCount(6)
   await page.getByLabel('Organization').selectOption('SLOW'); await page.getByRole('button', { name: 'Apply filters' }).click(); await page.getByLabel('Organization').selectOption('FAST'); await page.getByRole('button', { name: 'Apply filters' }).click()
   await expect(page.getByTestId('employee-chart-name').first()).toBeVisible()
+})
+
+test('invalid date ranges are localized and issue no dashboard requests in English and Arabic', async ({ page }) => {
+  await mockApp(page); const requests: URL[] = []
+  page.on('request', (request) => { if (request.url().includes('/api/v1/dashboard/')) requests.push(new URL(request.url())) })
+  await page.goto('/dashboard'); await expect(page.getByTestId('kpi-employees')).toBeVisible(); requests.length = 0
+  await page.getByLabel('Start date').fill('2026-07-20'); await page.getByLabel('End date').fill('2026-07-10'); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await expect(page.getByText('Start date must be on or before end date.')).toBeVisible(); expect(requests).toHaveLength(0)
+  await expect(page.getByLabel('Start date')).toHaveAttribute('max', '2026-07-10'); await expect(page.getByLabel('End date')).toHaveAttribute('min', '2026-07-20')
+  await page.getByTestId('dashboard-reset').click(); await expect(page.locator('#dashboard-filter-error')).toHaveCount(0)
+  await page.evaluate(() => localStorage.setItem('lang', 'ar')); await page.reload(); await expect(page.locator('html')).toHaveAttribute('dir', 'rtl'); await expect(page.getByTestId('employee-chart-name')).toHaveCount(12); requests.length = 0
+  await page.getByTestId('dashboard-start').fill('2026-07-20'); await page.getByTestId('dashboard-end').fill('2026-07-10'); await page.getByTestId('dashboard-apply').click()
+  await expect(page.getByText('يجب أن يكون تاريخ البدء في تاريخ الانتهاء أو قبله.')).toBeVisible(); expect(requests).toHaveLength(0)
+})
+
+test('organization refresh preserves the selected fallback and ALL omits org_id', async ({ page }) => {
+  await mockApp(page); await page.unroute('**/api/v1/dashboard/**')
+  let organizationCalls = 0; const analyticsRequests: URL[] = []
+  await page.route('**/api/v1/dashboard/**', async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/organizations')) {
+      organizationCalls += 1
+      if (organizationCalls === 1) return route.fulfill({ json: { success: true, data: [{ org_id: 'ORG-1' }, { org_id: 'ORG-2' }] } })
+      if (organizationCalls === 2) return route.fulfill({ status: 503, json: { detail: 'Attendance analytics are temporarily unavailable' } })
+      return route.fulfill({ json: { success: true, data: [{ org_id: 'ORG-2' }] } })
+    }
+    analyticsRequests.push(url); return respond(route, 'available')
+  })
+  await page.goto('/dashboard'); const select = page.getByTestId('dashboard-org')
+  await expect(select.locator('option')).toHaveText(['ALL', 'ORG-1', 'ORG-2'])
+  await select.selectOption('ORG-1'); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await expect.poll(() => analyticsRequests.filter((url) => url.searchParams.get('org_id') === 'ORG-1').length).toBe(4)
+  await page.getByRole('button', { name: 'Refresh' }).click()
+  await expect(page.getByText('Organization options are unavailable; the current selection is preserved.')).toBeVisible()
+  await expect(select).toHaveValue('ORG-1'); await expect(select.locator('option')).toHaveText(['ALL', 'ORG-1'])
+  await page.getByRole('button', { name: 'Refresh' }).click(); await expect(select).toHaveValue('ORG-1')
+  analyticsRequests.length = 0; await select.selectOption(''); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await expect.poll(() => analyticsRequests.length).toBe(4); expect(analyticsRequests.every((url) => !url.searchParams.has('org_id'))).toBeTruthy()
+})
+
+test('effective range is hidden while replacement overview loads and after it fails', async ({ page }) => {
+  await mockApp(page); await page.goto('/dashboard'); await expect(page.getByText(/Effective range:/)).toBeVisible()
+  await page.unroute('**/api/v1/dashboard/**'); await page.route('**/api/v1/dashboard/**', async (route) => {
+    if (new URL(route.request().url()).pathname.endsWith('/overview')) { await new Promise((resolve) => setTimeout(resolve, 300)); return respond(route, 'unavailable') }
+    return respond(route, 'available')
+  })
+  await page.getByLabel('Organization').selectOption('ORG-NEW'); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await expect(page.getByText(/Effective range:/)).toHaveCount(0); await expect(page.getByText('Attendance analytics are temporarily unavailable.')).toBeVisible(); await expect(page.getByText(/Effective range:/)).toHaveCount(0)
+})
+
+test('renders four accented primary KPIs separately from six secondary KPIs in LTR and RTL', async ({ page }) => {
+  await mockApp(page); await page.goto('/dashboard')
+  const primary = page.getByTestId('kpi-primary-grid'); const secondary = page.getByTestId('kpi-secondary-grid')
+  await expect(primary.locator('[data-kpi-tier="primary"]')).toHaveCount(4); await expect(secondary.locator('[data-kpi-tier="secondary"]')).toHaveCount(6)
+  await expect(primary.getByTestId('kpi-exceptions')).toBeVisible(); await expect(secondary.getByTestId('kpi-scheduled')).toBeVisible()
+  expect(await primary.locator('article').evaluateAll((cards) => cards.every((card) => getComputedStyle(card).borderInlineStartWidth === '4px'))).toBeTruthy()
+  expect(await secondary.locator('article').evaluateAll((cards) => cards.every((card) => getComputedStyle(card).borderInlineStartWidth !== '4px'))).toBeTruthy()
+  await page.evaluate(() => localStorage.setItem('lang', 'ar')); await page.reload(); await expect(page.locator('html')).toHaveAttribute('dir', 'rtl')
+  const employeeStyle = await page.getByTestId('kpi-employees').evaluate((card) => { const style = getComputedStyle(card); return { inlineStart: style.borderInlineStartWidth, right: style.borderRightWidth } })
+  expect(employeeStyle).toEqual({ inlineStart: '4px', right: '4px' })
+})
+
+test('an older delayed response cannot overwrite newer dashboard state', async ({ page }) => {
+  await mockApp(page); await page.unroute('**/api/v1/dashboard/**')
+  await page.route('**/api/v1/dashboard/**', async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/overview')) {
+      const org = url.searchParams.get('org_id'); if (org === 'SLOW') await new Promise((resolve) => setTimeout(resolve, 350))
+      return route.fulfill({ json: { success: true, data: { ...overview, employee_count: org === 'FAST' ? 99 : org === 'SLOW' ? 1 : 7 } } })
+    }
+    return respond(route, 'available')
+  })
+  await page.goto('/dashboard'); await expect(page.getByTestId('kpi-employees')).toContainText('7')
+  await page.getByLabel('Organization').selectOption('SLOW'); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await page.getByLabel('Organization').selectOption('FAST'); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await expect(page.getByTestId('kpi-employees')).toContainText('99'); await page.waitForTimeout(450); await expect(page.getByTestId('kpi-employees')).toContainText('99')
+})
+
+test.describe('Luna calendar and wall-clock values', () => {
+  test.use({ timezoneId: 'America/Los_Angeles' })
+  test('do not shift in a browser timezone west of UTC', async ({ page }) => {
+    await mockApp(page); await page.goto('/dashboard')
+    await expect(page.getByRole('cell', { name: 'Jul 30, 2026' }).first()).toBeVisible(); await expect(page.getByRole('cell', { name: '08:10 AM' }).first()).toBeVisible()
+  })
 })
