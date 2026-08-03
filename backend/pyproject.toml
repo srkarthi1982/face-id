@@ -28,9 +28,6 @@ dev = [
     "pytest-anyio>=0.0.0",
     "anyio[trio]>=4.0.0",
 ]
-mssql = [
-    "pyodbc>=5.1.0",
-]
 
 [tool.uv]
 index-url = "http://aitfs.jac.mil.ae:9081/repository/esnaad-pypy/simple/"

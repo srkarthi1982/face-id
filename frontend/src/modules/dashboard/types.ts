@@ -1,7 +1,7 @@
 import type {
   AttendanceExceptionItem,
+  DashboardDepartmentOption,
   DashboardOverview,
-  DashboardOrganizationOption,
   DashboardTrend,
   DashboardTrendGranularity,
   EmployeeWorkHoursRanking,
@@ -13,7 +13,7 @@ export type PanelStatus = 'idle' | 'loading' | 'available' | 'empty' | 'unavaila
 export type DashboardFilters = {
   start_date?: string
   end_date?: string
-  org_id?: string
+  department_id?: number
   granularity: DashboardTrendGranularity
   ranking_limit: number
   exception_page: number
@@ -25,4 +25,4 @@ export type PanelState<T> = { status: PanelStatus; data: T | null }
 export type ExceptionResult = { items: AttendanceExceptionItem[]; meta: Meta }
 
 export type { DashboardOverview, DashboardTrend, EmployeeWorkHoursRanking }
-export type { DashboardOrganizationOption }
+export type { DashboardDepartmentOption }

@@ -38,6 +38,10 @@ class PermissionCode(str, enum.Enum):
     LOCATION_WRITE = "location:write"
     UNIT_READ = "unit:read"
     UNIT_WRITE = "unit:write"
+    DEPARTMENT_READ = "department:read"
+    DEPARTMENT_WRITE = "department:write"
+    TIMING_READ = "timing:read"
+    TIMING_WRITE = "timing:write"
 
 class _PermissionMeta:
     __slots__ = ("code", "name", "description", "module")
@@ -65,6 +69,10 @@ PERMISSION_REGISTRY: list[_PermissionMeta] = [
     _PermissionMeta(PermissionCode.LOCATION_WRITE, "Write Locations", "Create, update, delete locations", "master-data"),
     _PermissionMeta(PermissionCode.UNIT_READ, "Read Units", "View unit hierarchy", "master-data"),
     _PermissionMeta(PermissionCode.UNIT_WRITE, "Write Units", "Create, update, delete units", "master-data"),
+    _PermissionMeta(PermissionCode.DEPARTMENT_READ, "Read Departments", "View department hierarchy", "master-data"),
+    _PermissionMeta(PermissionCode.DEPARTMENT_WRITE, "Write Departments", "Create, update, delete departments", "master-data"),
+    _PermissionMeta(PermissionCode.TIMING_READ, "Read Timings", "View department timing rules", "master-data"),
+    _PermissionMeta(PermissionCode.TIMING_WRITE, "Write Timings", "Create, update, delete department timing rules", "master-data"),
 ]
 
 DEFAULT_ROLE_PERMISSIONS: dict[str, list[PermissionCode]] = {
@@ -86,13 +94,19 @@ def sync_permissions_to_db(db) -> None:
     Only adds missing permissions; never deletes or overwrites existing ones.
     Resets the PostgreSQL sequence first to avoid ID collisions with
     manually-assigned IDs (34-40) from migration f6dc191f9a13.
+
+    Also grants any missing DEFAULT_ROLE_PERMISSIONS to existing roles. The
+    permission guard matches exact codes only, so "admin:full" is not a
+    wildcard for newly registered permissions.
     """
     import sqlalchemy as sa
-    from app.modules.users.models import Permission
+    from app.core.deps import invalidate_permission_cache
+    from app.modules.users.models import Permission, Role
 
-    max_id = db.execute(sa.text("SELECT COALESCE(MAX(id), 0) FROM permissions")).scalar_one()
-    db.execute(sa.text(f"SELECT setval('permissions_id_seq', GREATEST({max_id} + 1, 1), false)"))
-    db.commit()
+    if db.bind and db.bind.dialect.name == "postgresql":
+        max_id = db.execute(sa.text("SELECT COALESCE(MAX(id), 0) FROM permissions")).scalar_one()
+        db.execute(sa.text(f"SELECT setval('permissions_id_seq', GREATEST({max_id} + 1, 1), false)"))
+        db.commit()
 
     existing = {p.code for p in db.query(Permission.code).all()}
     missing = []
@@ -110,3 +124,20 @@ def sync_permissions_to_db(db) -> None:
     if missing:
         db.add_all(missing)
         db.commit()
+
+    permissions_by_code = {p.code: p for p in db.query(Permission).all()}
+    roles_by_name = {r.name.lower(): r for r in db.query(Role).all()}
+    granted_any = False
+    for role_name, default_codes in DEFAULT_ROLE_PERMISSIONS.items():
+        role = roles_by_name.get(role_name.lower())
+        if not role:
+            continue
+        held = {p.code for p in role.permissions}
+        for code in default_codes:
+            permission = permissions_by_code.get(str(code.value))
+            if permission and permission.code not in held:
+                role.permissions.append(permission)
+                granted_any = True
+    if granted_any:
+        db.commit()
+        invalidate_permission_cache()

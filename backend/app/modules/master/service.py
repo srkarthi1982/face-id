@@ -1,7 +1,15 @@
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import event, cast
-from app.modules.master.models import Location, Unit, UnitType, LocationType
-from app.modules.master.schemas import LocationCreate, LocationUpdate, UnitCreate, UnitUpdate
+from app.modules.master.models import Department, Location, Timing, Unit, UnitType, LocationType
+from app.modules.master.schemas import (
+    DepartmentCreate,
+    DepartmentUpdate,
+    LocationCreate,
+    LocationUpdate,
+    TimingCreate,
+    TimingUpdate,
+    UnitCreate,
+    UnitUpdate,
+)
 from fastapi import HTTPException, status
 from typing import List, Dict, Optional
 
@@ -484,6 +492,217 @@ def delete_location(db: Session, location_id: int) -> None:
         )
     
     db.delete(location)
+    db.commit()
+
+
+def _compute_department_path(db: Session, department: Department) -> str:
+    if department.parent_id is None:
+        return f"/{department.name}"
+    parent = db.query(Department).filter(Department.id == department.parent_id).first()
+    if not parent:
+        return f"/{department.name}"
+    return f"{parent.path}/{department.name}"
+
+
+def get_department_by_id(db: Session, department_id: int) -> Department:
+    department = db.query(Department).filter(Department.id == department_id).first()
+    if not department:
+        raise HTTPException(status_code=404, detail="Department not found")
+    return department
+
+
+def get_departments(db: Session, active_only: bool = False) -> list[Department]:
+    query = db.query(Department)
+    if active_only:
+        query = query.filter(Department.is_active.is_(True))
+    return query.order_by(Department.sort_order, Department.name, Department.id).all()
+
+
+def get_department_tree(db: Session) -> list:
+    from app.modules.master.schemas import DepartmentTreeItem
+
+    departments = db.query(Department).options(joinedload(Department.children)).all()
+    children_by_parent: dict[int | None, list[Department]] = {}
+    for department in departments:
+        children_by_parent.setdefault(department.parent_id, []).append(department)
+
+    def build_tree(item: Department) -> DepartmentTreeItem:
+        children = sorted(children_by_parent.get(item.id, []), key=lambda x: (x.sort_order, x.name, x.id))
+        return DepartmentTreeItem(
+            id=item.id,
+            name=item.name,
+            code=item.code,
+            description=item.description,
+            parent_id=item.parent_id,
+            path=item.path,
+            is_active=item.is_active,
+            sort_order=item.sort_order,
+            children=[build_tree(child) for child in children],
+        )
+
+    roots = sorted(children_by_parent.get(None, []), key=lambda x: (x.sort_order, x.name, x.id))
+    return [build_tree(root) for root in roots]
+
+
+def _validate_department_parent(db: Session, department_id: int | None, parent_id: int | None) -> None:
+    if parent_id is None:
+        return
+    if department_id is not None and parent_id == department_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Department cannot be its own parent")
+    parent = get_department_by_id(db, parent_id)
+    current = parent
+    while current.parent_id is not None:
+        if current.parent_id == department_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Department parent would create a cycle")
+        current = get_department_by_id(db, current.parent_id)
+
+
+def _update_department_children_paths(db: Session, parent_id: int) -> None:
+    children = db.query(Department).filter(Department.parent_id == parent_id).all()
+    for child in children:
+        child.path = _compute_department_path(db, child)
+        db.add(child)
+    db.commit()
+    for child in children:
+        _update_department_children_paths(db, child.id)
+
+
+def create_department(db: Session, department: DepartmentCreate) -> Department:
+    _validate_department_parent(db, None, department.parent_id)
+    db_department = Department(
+        name=department.name,
+        code=department.code,
+        description=department.description,
+        parent_id=department.parent_id,
+        sort_order=department.sort_order,
+    )
+    db.add(db_department)
+    db.flush()
+    db_department.path = _compute_department_path(db, db_department)
+    db.commit()
+    db.refresh(db_department)
+    return db_department
+
+
+def update_department(db: Session, department_id: int, department: DepartmentUpdate) -> Department:
+    db_department = get_department_by_id(db, department_id)
+    update_data = department.model_dump(exclude_unset=True)
+    if "parent_id" in update_data:
+        _validate_department_parent(db, department_id, update_data["parent_id"])
+    for field, value in update_data.items():
+        setattr(db_department, field, value)
+    if "parent_id" in update_data or "name" in update_data:
+        db_department.path = _compute_department_path(db, db_department)
+        _update_department_children_paths(db, db_department.id)
+    db.commit()
+    db.refresh(db_department)
+    return db_department
+
+
+def delete_department(db: Session, department_id: int) -> None:
+    department = get_department_by_id(db, department_id)
+    if department.children:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cannot delete department with children")
+    from app.modules.personnel.models import Personnel
+
+    personnel_count = db.query(Personnel).filter(Personnel.department_id == department_id).count()
+    if personnel_count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot delete department referenced by {personnel_count} personnel record(s)",
+        )
+    db.delete(department)
+    db.commit()
+
+
+def _timing_response(timing: Timing):
+    from app.modules.master.schemas import TimingResponse
+
+    return TimingResponse(
+        id=timing.id,
+        department_id=timing.department_id,
+        department_name=timing.department.name if timing.department else "",
+        start_day=timing.start_day,
+        end_day=timing.end_day,
+        start_time=timing.start_time,
+        end_time=timing.end_time,
+        is_active=timing.is_active,
+        created_at=timing.created_at,
+        updated_at=timing.updated_at,
+    )
+
+
+def _validate_timing_window(start_time, end_time) -> None:
+    if start_time >= end_time:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="start_time must be before end_time")
+
+
+def _validate_active_timing_unique(db: Session, department_id: int, timing_id: int | None = None) -> None:
+    existing = db.query(Timing).filter(
+        Timing.department_id == department_id,
+        Timing.is_active.is_(True),
+    )
+    if timing_id is not None:
+        existing = existing.filter(Timing.id != timing_id)
+    if existing.first():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Department already has an active timing",
+        )
+
+
+def get_timings(db: Session, active_only: bool = False):
+    query = db.query(Timing).options(joinedload(Timing.department))
+    if active_only:
+        query = query.filter(Timing.is_active.is_(True))
+    rows = query.join(Department).order_by(Department.name, Timing.id).all()
+    return [_timing_response(row) for row in rows]
+
+
+def get_timing_by_id(db: Session, timing_id: int) -> Timing:
+    timing = db.query(Timing).options(joinedload(Timing.department)).filter(Timing.id == timing_id).first()
+    if not timing:
+        raise HTTPException(status_code=404, detail="Timing not found")
+    return timing
+
+
+def create_timing(db: Session, timing: TimingCreate):
+    department = get_department_by_id(db, timing.department_id)
+    if not department.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Department must be active")
+    _validate_timing_window(timing.start_time, timing.end_time)
+    if timing.is_active:
+        _validate_active_timing_unique(db, timing.department_id)
+    db_timing = Timing(**timing.model_dump())
+    db.add(db_timing)
+    db.commit()
+    db.refresh(db_timing)
+    return _timing_response(get_timing_by_id(db, db_timing.id))
+
+
+def update_timing(db: Session, timing_id: int, timing: TimingUpdate):
+    db_timing = get_timing_by_id(db, timing_id)
+    update_data = timing.model_dump(exclude_unset=True)
+    department_id = update_data.get("department_id", db_timing.department_id)
+    start_time = update_data.get("start_time", db_timing.start_time)
+    end_time = update_data.get("end_time", db_timing.end_time)
+    _validate_timing_window(start_time, end_time)
+    is_active = update_data.get("is_active", db_timing.is_active)
+    if is_active:
+        department = get_department_by_id(db, department_id)
+        if not department.is_active:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Department must be active")
+        _validate_active_timing_unique(db, department_id, timing_id)
+    for field, value in update_data.items():
+        setattr(db_timing, field, value)
+    db.commit()
+    db.refresh(db_timing)
+    return _timing_response(get_timing_by_id(db, db_timing.id))
+
+
+def delete_timing(db: Session, timing_id: int) -> None:
+    timing = get_timing_by_id(db, timing_id)
+    db.delete(timing)
     db.commit()
 
 

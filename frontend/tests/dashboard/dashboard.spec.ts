@@ -1,12 +1,12 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 
 const duration = { scheduled_seconds: 32_400, actual_seconds: 30_600, normal_seconds: 28_800, overtime_seconds: 1_800, late_seconds: 300, early_seconds: 0, absent_seconds: 0 }
-const range = { effective_start_date: '2026-07-01', effective_end_date: '2026-07-30', source_latest_report_date: '2026-07-30', org_id: null, data_status: 'available', duration_unit: 'seconds' }
+const range = { effective_start_date: '2026-07-01', effective_end_date: '2026-07-30', source_latest_report_date: '2026-07-30', department_id: null, data_status: 'available', duration_unit: 'seconds' }
 const overview = { ...range, ...duration, report_row_count: 22, report_day_count: 20, employee_count: 7, reported_exception_count: 3 }
 const ranking = [
-  { ...duration, rank: 1, org_id: 'ORG-1', employee_key: 'P-01', person_id: 'P-01', person_no: 'E-01', person_name: 'Amina Noor', department_name: 'Operations', report_day_count: 20 },
-  { ...duration, scheduled_seconds: 28_800, actual_seconds: 27_000, overtime_seconds: 0, rank: 2, org_id: 'ORG-2', employee_key: 'E-02', person_id: null, person_no: 'E-02', person_name: null, department_name: 'International Operations and Workforce Planning Department', report_day_count: 18 },
-  { ...duration, rank: 3, org_id: 'ORG-2', employee_key: 'LONG-03', person_id: 'LONG-03', person_no: 'E-03', person_name: 'A very long employee name retained in full for accessibility', department_name: 'Operations', report_day_count: 17 },
+  { ...duration, rank: 1, department_id: 1, employee_key: 'P-01', person_id: 'P-01', person_no: 'E-01', person_name: 'Amina Noor', department_name: 'Operations', report_day_count: 20 },
+  { ...duration, scheduled_seconds: 28_800, actual_seconds: 27_000, overtime_seconds: 0, rank: 2, department_id: 2, employee_key: 'E-02', person_id: null, person_no: 'E-02', person_name: null, department_name: 'International Operations and Workforce Planning Department', report_day_count: 18 },
+  { ...duration, rank: 3, department_id: 2, employee_key: 'LONG-03', person_id: 'LONG-03', person_no: 'E-03', person_name: 'A very long employee name retained in full for accessibility', department_name: 'Operations', report_day_count: 17 },
 ]
 const allEmployees = [
   ...ranking,
@@ -17,17 +17,24 @@ const allEmployees = [
     actual_seconds: ranking[0].actual_seconds - (index + 1) * 60,
   })),
 ]
-const exception = { id: 1, org_id: 'ORG-1', person_id: 'P-01', person_no: 'E-01', person_name: 'Amina Noor', report_date: '2026-07-30', clock_time: '2026-07-30T08:10:00', device_key: 'D-01', device_name: 'Main Gate' }
-const organizations = ['FAST', 'ORG-1', 'ORG-2', 'ORG-NEW', 'SLOW'].map((org_id) => ({ org_id }))
+const exception = { id: '1:2026-07-30:LATE', department_id: 1, department_name: 'Operations', exception_type: 'LATE', person_id: 'P-01', person_no: 'E-01', person_name: 'Amina Noor', report_date: '2026-07-30', clock_time: '2026-07-30T08:10:00+04:00', device_key: 'D-01', device_name: 'Main Gate' }
+const departments = [
+  { department_id: 1, department_name: 'Operations' },
+  { department_id: 2, department_name: 'International Operations and Workforce Planning Department' },
+  { department_id: 3, department_name: 'Research' },
+  { department_id: 4, department_name: 'Support' },
+  { department_id: 5, department_name: 'Training' },
+]
+const departmentByName = new Map(departments.map((department) => [department.department_name, String(department.department_id)]))
 type Mode = 'available' | 'empty' | 'unavailable'
 
 async function respond(route: Route, mode: Mode) {
   const url = new URL(route.request().url()); const path = url.pathname
   if (mode === 'unavailable') return route.fulfill({ status: 503, json: { detail: 'Attendance analytics are temporarily unavailable' } })
   const empty = mode === 'empty'
-  if (path.endsWith('/organizations')) return route.fulfill({ json: { success: true, data: organizations } })
+  if (path.endsWith('/departments')) return route.fulfill({ json: { success: true, data: departments } })
   if (path.endsWith('/overview')) return route.fulfill({ json: { success: true, data: empty ? { ...overview, data_status: 'empty', report_row_count: 0 } : overview } })
-  if (path.endsWith('/work-hours/ranking')) return route.fulfill({ json: { success: true, data: { ...range, org_id: url.searchParams.get('org_id'), items: empty ? [] : url.searchParams.get('include_all') === 'true' ? allEmployees : ranking } } })
+  if (path.endsWith('/work-hours/ranking')) return route.fulfill({ json: { success: true, data: { ...range, department_id: url.searchParams.get('department_id') ? Number(url.searchParams.get('department_id')) : null, items: empty ? [] : url.searchParams.get('include_all') === 'true' ? allEmployees : ranking } } })
   if (path.endsWith('/work-hours/trend')) return route.fulfill({ json: { success: true, data: { ...range, granularity: 'week', points: [] } } })
   return route.fulfill({ json: { success: true, data: empty ? [] : [exception], meta: { page: 1, page_size: 20, total: empty ? 0 : 1, pages: empty ? 0 : 1 } } })
 }
@@ -74,13 +81,13 @@ test('keeps names horizontal, preserves full long names accessibly, and scrolls 
   expect(first && second && second.y - first.y >= 60).toBeTruthy()
 })
 
-test('global dates and organization refresh the chart ranking request', async ({ page }) => {
+test('global dates and department refresh the chart ranking request', async ({ page }) => {
   await mockApp(page); const requests: URL[] = []
   page.on('request', (request) => { if (request.url().includes('/work-hours/ranking')) requests.push(new URL(request.url())) })
   await page.goto('/dashboard'); await expect(page.getByTestId('employee-chart-name')).toHaveCount(12); requests.length = 0
-  await page.getByLabel('Start date').fill('2026-07-10'); await page.getByLabel('End date').fill('2026-07-20'); await page.getByLabel('Organization').selectOption('ORG-2')
+  await page.getByLabel('Start date').fill('2026-07-10'); await page.getByLabel('End date').fill('2026-07-20'); await page.getByLabel('Department').selectOption(departmentByName.get('International Operations and Workforce Planning Department')!)
   await page.getByRole('button', { name: 'Apply filters' }).click(); await expect.poll(() => requests.length).toBe(2)
-  expect(requests.every((url) => url.searchParams.get('org_id') === 'ORG-2' && url.searchParams.get('start_date') === '2026-07-10')).toBeTruthy()
+  expect(requests.every((url) => url.searchParams.get('department_id') === departmentByName.get('International Operations and Workforce Planning Department') && url.searchParams.get('start_date') === '2026-07-10')).toBeTruthy()
   expect(requests.some((url) => url.searchParams.get('include_all') === 'true')).toBeTruthy()
 })
 
@@ -100,13 +107,13 @@ test('Day Week Month Year genuinely rescope only the all-employee chart request'
   }
 })
 
-test('ranking limit refreshes the shared chart and table without losing draft organization', async ({ page }) => {
+test('ranking limit refreshes the shared chart and table without losing draft department', async ({ page }) => {
   await mockApp(page); const requests: URL[] = []
   page.on('request', (request) => { if (request.url().includes('/work-hours/ranking')) requests.push(new URL(request.url())) })
   await page.goto('/dashboard'); await expect(page.getByRole('heading', { name: 'Employee work-hours ranking' })).toBeVisible(); await expect(page.getByRole('cell', { name: 'Amina Noor' }).first()).toBeVisible(); requests.length = 0
-  await page.getByLabel('Organization').selectOption('SLOW'); await page.getByLabel('Rows', { exact: true }).selectOption('20')
+  await page.getByLabel('Department').selectOption(departmentByName.get('Training')!); await page.getByLabel('Rows', { exact: true }).selectOption('20')
   await expect.poll(() => requests.length).toBe(1); expect(requests[0].searchParams.get('limit')).toBe('20')
-  await expect(page.getByLabel('Organization')).toHaveValue('SLOW')
+  await expect(page.getByLabel('Department')).toHaveValue(departmentByName.get('Training')!)
 })
 
 for (const viewport of [{ width: 360, height: 800 }, { width: 768, height: 900 }, { width: 1440, height: 1000 }]) {
@@ -123,8 +130,8 @@ test('empty, unavailable, and stale-request states remain isolated', async ({ pa
   await mockApp(page, 'empty'); await page.goto('/dashboard'); await expect(page.getByText('No attendance analytics match these filters.').first()).toBeVisible()
   await page.unroute('**/api/v1/dashboard/**'); await page.route('**/api/v1/dashboard/**', async (route) => respond(route, 'unavailable')); await page.getByRole('button', { name: 'Refresh' }).click()
   await expect(page.getByText('Attendance analytics are temporarily unavailable.').first()).toBeVisible()
-  await page.unroute('**/api/v1/dashboard/**'); await page.route('**/api/v1/dashboard/**', async (route) => { const url = new URL(route.request().url()); if (url.pathname.endsWith('/work-hours/ranking') && url.searchParams.get('org_id') === 'SLOW') await new Promise((resolve) => setTimeout(resolve, 300)); return respond(route, 'available') }); await page.getByRole('button', { name: 'Refresh' }).click(); await expect(page.getByLabel('Organization').locator('option')).toHaveCount(6)
-  await page.getByLabel('Organization').selectOption('SLOW'); await page.getByRole('button', { name: 'Apply filters' }).click(); await page.getByLabel('Organization').selectOption('FAST'); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await page.unroute('**/api/v1/dashboard/**'); await page.route('**/api/v1/dashboard/**', async (route) => { const url = new URL(route.request().url()); if (url.pathname.endsWith('/work-hours/ranking') && url.searchParams.get('department_id') === departmentByName.get('Training')) await new Promise((resolve) => setTimeout(resolve, 300)); return respond(route, 'available') }); await page.getByRole('button', { name: 'Refresh' }).click(); await expect(page.getByLabel('Department').locator('option')).toHaveCount(6)
+  await page.getByLabel('Department').selectOption(departmentByName.get('Training')!); await page.getByRole('button', { name: 'Apply filters' }).click(); await page.getByLabel('Department').selectOption(departmentByName.get('Operations')!); await page.getByRole('button', { name: 'Apply filters' }).click()
   await expect(page.getByTestId('employee-chart-name').first()).toBeVisible()
 })
 
@@ -141,29 +148,29 @@ test('invalid date ranges are localized and issue no dashboard requests in Engli
   await expect(page.getByText('يجب أن يكون تاريخ البدء في تاريخ الانتهاء أو قبله.')).toBeVisible(); expect(requests).toHaveLength(0)
 })
 
-test('organization refresh preserves the selected fallback and ALL omits org_id', async ({ page }) => {
+test('department refresh preserves the selected fallback and ALL omits department_id', async ({ page }) => {
   await mockApp(page); await page.unroute('**/api/v1/dashboard/**')
-  let organizationCalls = 0; const analyticsRequests: URL[] = []
+  let departmentCalls = 0; const analyticsRequests: URL[] = []
   await page.route('**/api/v1/dashboard/**', async (route) => {
     const url = new URL(route.request().url())
-    if (url.pathname.endsWith('/organizations')) {
-      organizationCalls += 1
-      if (organizationCalls === 1) return route.fulfill({ json: { success: true, data: [{ org_id: 'ORG-1' }, { org_id: 'ORG-2' }] } })
-      if (organizationCalls === 2) return route.fulfill({ status: 503, json: { detail: 'Attendance analytics are temporarily unavailable' } })
-      return route.fulfill({ json: { success: true, data: [{ org_id: 'ORG-2' }] } })
+    if (url.pathname.endsWith('/departments')) {
+      departmentCalls += 1
+      if (departmentCalls === 1) return route.fulfill({ json: { success: true, data: [{ department_id: 1, department_name: 'Operations' }, { department_id: 2, department_name: 'Support' }] } })
+      if (departmentCalls === 2) return route.fulfill({ status: 503, json: { detail: 'Attendance analytics are temporarily unavailable' } })
+      return route.fulfill({ json: { success: true, data: [{ department_id: 2, department_name: 'Support' }] } })
     }
     analyticsRequests.push(url); return respond(route, 'available')
   })
-  await page.goto('/dashboard'); const select = page.getByTestId('dashboard-org')
-  await expect(select.locator('option')).toHaveText(['ALL', 'ORG-1', 'ORG-2'])
-  await select.selectOption('ORG-1'); await page.getByRole('button', { name: 'Apply filters' }).click()
-  await expect.poll(() => analyticsRequests.filter((url) => url.searchParams.get('org_id') === 'ORG-1').length).toBe(4)
+  await page.goto('/dashboard'); const select = page.getByTestId('dashboard-department')
+  await expect(select.locator('option')).toHaveText(['ALL', 'Operations', 'Support'])
+  await select.selectOption('1'); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await expect.poll(() => analyticsRequests.filter((url) => url.searchParams.get('department_id') === '1').length).toBe(4)
   await page.getByRole('button', { name: 'Refresh' }).click()
-  await expect(page.getByText('Organization options are unavailable; the current selection is preserved.')).toBeVisible()
-  await expect(select).toHaveValue('ORG-1'); await expect(select.locator('option')).toHaveText(['ALL', 'ORG-1'])
-  await page.getByRole('button', { name: 'Refresh' }).click(); await expect(select).toHaveValue('ORG-1')
+  await expect(page.getByText('Department options are unavailable; the current selection is preserved.')).toBeVisible()
+  await expect(select).toHaveValue('1'); await expect(select.locator('option')).toHaveText(['ALL', '1'])
+  await page.getByRole('button', { name: 'Refresh' }).click(); await expect(select).toHaveValue('1')
   analyticsRequests.length = 0; await select.selectOption(''); await page.getByRole('button', { name: 'Apply filters' }).click()
-  await expect.poll(() => analyticsRequests.length).toBe(4); expect(analyticsRequests.every((url) => !url.searchParams.has('org_id'))).toBeTruthy()
+  await expect.poll(() => analyticsRequests.length).toBe(4); expect(analyticsRequests.every((url) => !url.searchParams.has('department_id'))).toBeTruthy()
 })
 
 test('effective range is hidden while replacement overview loads and after it fails', async ({ page }) => {
@@ -172,7 +179,7 @@ test('effective range is hidden while replacement overview loads and after it fa
     if (new URL(route.request().url()).pathname.endsWith('/overview')) { await new Promise((resolve) => setTimeout(resolve, 300)); return respond(route, 'unavailable') }
     return respond(route, 'available')
   })
-  await page.getByLabel('Organization').selectOption('ORG-NEW'); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await page.getByLabel('Department').selectOption(departmentByName.get('Research')!); await page.getByRole('button', { name: 'Apply filters' }).click()
   await expect(page.getByText(/Effective range:/)).toHaveCount(0); await expect(page.getByText('Attendance analytics are temporarily unavailable.')).toBeVisible(); await expect(page.getByText(/Effective range:/)).toHaveCount(0)
 })
 
@@ -193,18 +200,18 @@ test('an older delayed response cannot overwrite newer dashboard state', async (
   await page.route('**/api/v1/dashboard/**', async (route) => {
     const url = new URL(route.request().url())
     if (url.pathname.endsWith('/overview')) {
-      const org = url.searchParams.get('org_id'); if (org === 'SLOW') await new Promise((resolve) => setTimeout(resolve, 350))
-      return route.fulfill({ json: { success: true, data: { ...overview, employee_count: org === 'FAST' ? 99 : org === 'SLOW' ? 1 : 7 } } })
+      const department = url.searchParams.get('department_id'); if (department === departmentByName.get('Training')) await new Promise((resolve) => setTimeout(resolve, 350))
+      return route.fulfill({ json: { success: true, data: { ...overview, employee_count: department === departmentByName.get('Operations') ? 99 : department === departmentByName.get('Training') ? 1 : 7 } } })
     }
     return respond(route, 'available')
   })
   await page.goto('/dashboard'); await expect(page.getByTestId('kpi-employees')).toContainText('7')
-  await page.getByLabel('Organization').selectOption('SLOW'); await page.getByRole('button', { name: 'Apply filters' }).click()
-  await page.getByLabel('Organization').selectOption('FAST'); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await page.getByLabel('Department').selectOption(departmentByName.get('Training')!); await page.getByRole('button', { name: 'Apply filters' }).click()
+  await page.getByLabel('Department').selectOption(departmentByName.get('Operations')!); await page.getByRole('button', { name: 'Apply filters' }).click()
   await expect(page.getByTestId('kpi-employees')).toContainText('99'); await page.waitForTimeout(450); await expect(page.getByTestId('kpi-employees')).toContainText('99')
 })
 
-test.describe('Luna calendar and wall-clock values', () => {
+test.describe('PostgreSQL calendar and wall-clock values', () => {
   test.use({ timezoneId: 'America/Los_Angeles' })
   test('do not shift in a browser timezone west of UTC', async ({ page }) => {
     await mockApp(page); await page.goto('/dashboard')

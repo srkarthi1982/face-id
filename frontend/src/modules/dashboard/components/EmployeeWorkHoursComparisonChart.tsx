@@ -45,7 +45,7 @@ export default function EmployeeWorkHoursComparisonChart({ data }: { data: Emplo
     const innerHeight = height - margin.top - margin.bottom
     const maximum = d3.max(items, (item) => Math.max(item.scheduled_seconds, item.actual_seconds, item.overtime_seconds)) ?? 0
     const x = d3.scaleLinear().domain([0, Math.max(1, toHours(maximum))]).nice(5).range([0, innerWidth])
-    const y = d3.scaleBand<string>().domain(items.map((item) => `${item.rank}:${item.org_id ?? ''}:${item.employee_key}`)).range([0, innerHeight]).paddingInner(.3)
+    const y = d3.scaleBand<string>().domain(items.map((item) => `${item.rank}:${item.department_id ?? ''}:${item.employee_key}`)).range([0, innerHeight]).paddingInner(.3)
     const grouped = d3.scaleBand<Field>().domain(series.map((entry) => entry.field)).range([0, y.bandwidth()]).padding(.1)
     return { height, margin, innerWidth, innerHeight, x, y, grouped }
   }, [items, rtl, width])
@@ -59,7 +59,7 @@ export default function EmployeeWorkHoursComparisonChart({ data }: { data: Emplo
         <g transform={`translate(${chart.margin.left},${chart.margin.top})`}>
           {chart.x.ticks(5).map((tick) => <g key={tick} transform={`translate(${chart.x(tick)},0)`}><line y2={chart.innerHeight} stroke="var(--border)" opacity=".55" /><text y={chart.innerHeight + 24} textAnchor="middle" fill="var(--text-secondary)" fontSize="10">{formatNumber(Math.round(tick * 10) / 10, lang)} {t('nav.dashboard.units.hour')}</text></g>)}
           {items.map((item) => {
-            const key = `${item.rank}:${item.org_id ?? ''}:${item.employee_key}`
+            const key = `${item.rank}:${item.department_id ?? ''}:${item.employee_key}`
             const name = displayName(item)
             const rowY = chart.y(key) ?? 0
             return <g key={key} data-testid="employee-chart-row">

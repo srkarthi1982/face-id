@@ -1,7 +1,7 @@
-from pydantic import BaseModel, ConfigDict, field_validator
-from datetime import datetime
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from datetime import datetime, time
 from typing import Optional, List, Dict, Any
-from .models import UnitType, LocationType
+from .models import UnitType, LocationType, Weekday
 
 
 class LocationCreate(BaseModel):
@@ -93,6 +93,91 @@ class UnitTreeItem(BaseModel):
     is_active: bool
     sort_order: int
     children: list["UnitTreeItem"] = []
+
+
+class DepartmentCreate(BaseModel):
+    name: str
+    code: Optional[str] = None
+    description: Optional[str] = None
+    parent_id: Optional[int] = None
+    sort_order: int = 0
+
+
+class DepartmentUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    description: Optional[str] = None
+    parent_id: Optional[int] = None
+    is_active: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+
+class DepartmentResponse(BaseModel):
+    id: int
+    name: str
+    code: Optional[str]
+    description: Optional[str]
+    parent_id: Optional[int]
+    path: str
+    is_active: bool
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DepartmentTreeItem(BaseModel):
+    id: int
+    name: str
+    code: Optional[str]
+    description: Optional[str]
+    parent_id: Optional[int] = None
+    path: str
+    is_active: bool
+    sort_order: int
+    children: list["DepartmentTreeItem"] = []
+
+
+class TimingBase(BaseModel):
+    department_id: int
+    start_day: Weekday
+    end_day: Weekday
+    start_time: time
+    end_time: time
+    is_active: bool = True
+
+    @model_validator(mode="after")
+    def validate_same_day_shift(self):
+        if self.start_time >= self.end_time:
+            raise ValueError("start_time must be before end_time")
+        return self
+
+
+class TimingCreate(TimingBase):
+    pass
+
+
+class TimingUpdate(BaseModel):
+    department_id: Optional[int] = None
+    start_day: Optional[Weekday] = None
+    end_day: Optional[Weekday] = None
+    start_time: Optional[time] = None
+    end_time: Optional[time] = None
+    is_active: Optional[bool] = None
+
+
+class TimingResponse(BaseModel):
+    id: int
+    department_id: int
+    department_name: str
+    start_day: Weekday
+    end_day: Weekday
+    start_time: time
+    end_time: time
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LocationChainItem(BaseModel):

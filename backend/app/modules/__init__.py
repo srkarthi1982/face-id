@@ -19,7 +19,7 @@ MODULE_NAMES = [
     "person_mapping",# Device-person mapping
     "recognition_records", # Recognition records
     "callbacks",     # Callback configurations
-    "dashboard",     # External Luna analytics endpoints; no primary ORM models
+    "dashboard",     # PostgreSQL attendance analytics endpoints; no primary ORM models
     "audit",         # AuditLog → User — must be last
 ]
 

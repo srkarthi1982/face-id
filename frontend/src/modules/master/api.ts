@@ -1,5 +1,5 @@
 import { client } from '../../api/client'
-import type { LocationCreate, UnitCreate, LocationType, UnitType, LocationChainCreate, UnitChainCreate } from './types'
+import type { DepartmentCreate, DepartmentUpdate, LocationCreate, UnitCreate, LocationType, TimingCreate, TimingUpdate, UnitType, LocationChainCreate, UnitChainCreate } from './types'
 
 export interface LocationTreeItem {
     id: number
@@ -49,6 +49,32 @@ export interface UnitResponse {
     path: string
     is_active: boolean
     sort_order: number
+    created_at: string
+    updated_at: string
+}
+
+export interface DepartmentResponse {
+    id: number
+    name: string
+    code: string | null
+    description: string | null
+    parent_id: number | null
+    path: string
+    is_active: boolean
+    sort_order: number
+    created_at: string
+    updated_at: string
+}
+
+export interface TimingResponse {
+    id: number
+    department_id: number
+    department_name: string
+    start_day: string
+    end_day: string
+    start_time: string
+    end_time: string
+    is_active: boolean
     created_at: string
     updated_at: string
 }
@@ -172,6 +198,46 @@ export async function deleteUnit(id: number): Promise<{ error?: unknown }> {
     return client.delete({
         url: `/api/v1/master-data/units/${id}`,
     })
+}
+
+export async function getDepartments(activeOnly = false): Promise<{ data?: DepartmentResponse[]; error?: unknown }> {
+    const result = await client.get({
+        url: `/api/v1/master-data/departments${activeOnly ? '?active_only=true' : ''}`,
+    })
+    return { data: result.data as DepartmentResponse[] | undefined, error: result.error }
+}
+
+export async function createDepartment(body: DepartmentCreate): Promise<{ data?: DepartmentResponse; error?: unknown }> {
+    const result = await client.post({ url: '/api/v1/master-data/departments', body })
+    return { data: result.data as DepartmentResponse | undefined, error: result.error }
+}
+
+export async function updateDepartment(id: number, body: DepartmentUpdate): Promise<{ data?: DepartmentResponse; error?: unknown }> {
+    const result = await client.put({ url: `/api/v1/master-data/departments/${id}`, body })
+    return { data: result.data as DepartmentResponse | undefined, error: result.error }
+}
+
+export async function deleteDepartment(id: number): Promise<{ error?: unknown }> {
+    return client.delete({ url: `/api/v1/master-data/departments/${id}` })
+}
+
+export async function getTimings(): Promise<{ data?: TimingResponse[]; error?: unknown }> {
+    const result = await client.get({ url: '/api/v1/master-data/timings' })
+    return { data: result.data as TimingResponse[] | undefined, error: result.error }
+}
+
+export async function createTiming(body: TimingCreate): Promise<{ data?: TimingResponse; error?: unknown }> {
+    const result = await client.post({ url: '/api/v1/master-data/timings', body })
+    return { data: result.data as TimingResponse | undefined, error: result.error }
+}
+
+export async function updateTiming(id: number, body: TimingUpdate): Promise<{ data?: TimingResponse; error?: unknown }> {
+    const result = await client.put({ url: `/api/v1/master-data/timings/${id}`, body })
+    return { data: result.data as TimingResponse | undefined, error: result.error }
+}
+
+export async function deleteTiming(id: number): Promise<{ error?: unknown }> {
+    return client.delete({ url: `/api/v1/master-data/timings/${id}` })
 }
 
 export async function getCommandUnits(): Promise<{ data?: UnitResponse[]; error?: unknown }> {

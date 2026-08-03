@@ -1,5 +1,6 @@
 export type LocationType = 'emirate' | 'base' | 'location' | 'building' | 'area'
 export type UnitType = 'force' | 'command' | 'battalion' | 'unit'
+export type Weekday = 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday'
 
 export const LOCATION_VALID_PARENTS: Record<LocationType, LocationType[]> = {
     emirate: [],
@@ -74,4 +75,39 @@ export interface UnitChainItem {
 
 export interface UnitChainCreate {
     chain: UnitChainItem[]
+}
+
+export interface DepartmentCreate {
+    name: string
+    code?: string | null
+    description?: string | null
+    parent_id?: number | null
+    sort_order?: number
+}
+
+export interface DepartmentUpdate {
+    name?: string
+    code?: string | null
+    description?: string | null
+    parent_id?: number | null
+    is_active?: boolean
+    sort_order?: number
+}
+
+export interface TimingCreate {
+    department_id: number
+    start_day: Weekday
+    end_day: Weekday
+    start_time: string
+    end_time: string
+    is_active?: boolean
+}
+
+export interface TimingUpdate {
+    department_id?: number
+    start_day?: Weekday
+    end_day?: Weekday
+    start_time?: string
+    end_time?: string
+    is_active?: boolean
 }

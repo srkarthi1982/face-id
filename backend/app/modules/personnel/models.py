@@ -5,7 +5,7 @@ from typing import Optional, TYPE_CHECKING
 from app.core.database import Base
 
 if TYPE_CHECKING:
-    from app.modules.master.models import Location
+    from app.modules.master.models import Department, Location
     from app.modules.photos.models import PhotoRegistration
     from app.modules.person_mapping.models import DevicePersonMapping
 
@@ -44,7 +44,7 @@ class Personnel(Base):
     
     # Employment information
     department_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("locations.id", ondelete="SET NULL"),
+        ForeignKey("departments.id", ondelete="SET NULL"),
         nullable=True,
         index=True
     )
@@ -78,9 +78,9 @@ class Personnel(Base):
         back_populates="personnel"
     )
     
-    department: Mapped[Optional["Location"]] = relationship(
+    department: Mapped[Optional["Department"]] = relationship(
         foreign_keys=[department_id],
-        back_populates="personnel_department"
+        back_populates="personnel"
     )
     
     # One row per (person, device); device_id NULL = master photo not tied to a device
