@@ -8,7 +8,6 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, insert
-from sqlalchemy.dialects import mssql, postgresql
 from sqlalchemy.pool import StaticPool
 
 from app.core.permissions import PermissionCode
@@ -119,9 +118,8 @@ def test_runtime_analytics_modules_have_no_primary_session_or_writes():
     assert ".commit(" not in combined
     assert ".flush(" not in combined
     assert "insert(" not in combined
-    assert "update(" not in combined
-    assert "delete(" not in combined
-    assert "text(" not in combined
+    assert " UPDATE " not in combined.upper()
+    assert " DELETE " not in combined.upper()
     assert "saas_ca_clock_record" not in combined
     assert "require_role" not in combined
     assert "PermissionCode.ANALYTICS_READ" in inspect.getsource(router_module)
@@ -145,14 +143,45 @@ def test_runtime_analytics_modules_have_no_primary_session_or_writes():
         (repository.exceptions_statement, (date(2025, 1, 1), date(2025, 1, 31), "ORG", 1, 20)),
     ],
 )
-def test_business_selects_compile_for_postgresql_and_mssql(builder, args):
-    statement = builder(*args)
-    for dialect in (postgresql.dialect(), mssql.dialect()):
-        compiled = str(statement.compile(dialect=dialect))
-        assert "dbo." in compiled
-        assert "INSERT" not in compiled.upper()
-        assert "UPDATE" not in compiled.upper()
-        assert "DELETE FROM" not in compiled.upper()
+def test_business_queries_are_plain_parameterized_read_only_sql(builder, args):
+    sql, parameters = builder(*args)
+    assert isinstance(sql, str)
+    assert "dbo." in sql
+    assert not any(token in sql.upper() for token in (" INSERT ", " UPDATE ", " DELETE ", " MERGE ", " DROP ", " ALTER ", " CREATE ", " TRUNCATE ", " EXEC "))
+    assert all(value not in sql for value in parameters.values() if isinstance(value, str) and value)
+    source = inspect.getsource(repository)
+    assert "from sqlalchemy" not in source
+    assert "func." not in source
+
+
+def test_request_values_are_bound_and_never_interpolated_into_luna_sql():
+    malicious_org = "ORG'; DROP TABLE dbo.saas_ca_person;--"
+    builders = [
+        repository.latest_report_date_statement(malicious_org),
+        repository.overview_statement(date(2025, 1, 1), date(2025, 1, 31), malicious_org),
+        repository.ranking_statement(date(2025, 1, 1), date(2025, 1, 31), malicious_org, 37),
+        repository.exceptions_statement(date(2025, 1, 1), date(2025, 1, 31), malicious_org, 7, 23),
+    ]
+    for sql, parameters in builders:
+        assert malicious_org not in sql
+        assert parameters["org_id"] == malicious_org
+    exception_sql, exception_parameters = builders[-1]
+    assert ":row_start" in exception_sql and ":row_end" in exception_sql
+    assert exception_parameters["row_start"] == 139
+    assert exception_parameters["row_end"] == 161
+
+
+def test_include_all_ranking_mode_removes_sql_limit_without_changing_default(monkeypatch):
+    captured = []
+    monkeypatch.setattr(repository, "get_latest_report_date", lambda org_id=None: date(2026, 1, 31))
+    monkeypatch.setattr(repository, "get_ranking_aggregates", lambda start, end, org, limit: captured.append(limit) or [])
+    service.get_ranking(date(2026, 1, 1), date(2026, 1, 31), "ORG", 10, 3660)
+    service.get_ranking(date(2026, 1, 1), date(2026, 1, 31), "ORG", 10, 3660, True)
+    assert captured == [10, None]
+    limited_sql, limited_parameters = repository.ranking_statement(date(2026, 1, 1), date(2026, 1, 31), "ORG", 10)
+    all_sql, all_parameters = repository.ranking_statement(date(2026, 1, 1), date(2026, 1, 31), "ORG", None)
+    assert "row_position <= :limit" in limited_sql and limited_parameters["limit"] == 10
+    assert "row_position <= :limit" not in all_sql and "limit" not in all_parameters
 
 
 def test_overview_uses_latest_default_range_and_exact_vendor_sums(monkeypatch):
@@ -363,12 +392,12 @@ def test_organizations_include_all_approved_sources_trim_sort_and_filter(monkeyp
 
 def test_organizations_empty_and_repository_execution_is_bounded(monkeypatch):
     calls = []
-    monkeypatch.setattr(repository, "_execute_luna_select", lambda statement: calls.append(statement) or [])
+    monkeypatch.setattr(repository, "execute_luna_select", lambda sql, parameters: calls.append((sql, parameters)) or [])
     assert service.get_organizations() == []
     assert len(calls) == 1
-    compiled = str(calls[0].compile(dialect=postgresql.dialect())).lower()
-    assert "saas_ca_clock_record" not in compiled
-    assert compiled.count("select distinct") == 4
+    sql = calls[0][0].lower()
+    assert "saas_ca_clock_record" not in sql
+    assert sql.count("select distinct") == 4
 
 
 def test_padded_organizations_are_canonical_across_analytics_and_enrichment(monkeypatch):
@@ -600,7 +629,7 @@ def test_every_route_uses_one_router_level_permission_guard(route):
 def test_http_contract_exposes_only_fixed_query_parameters():
     app = FastAPI()
     app.include_router(dashboard_router)
-    allowed = {"start_date", "end_date", "org_id", "granularity", "limit", "page", "page_size"}
+    allowed = {"start_date", "end_date", "org_id", "granularity", "limit", "include_all", "page", "page_size"}
     actual = {
         parameter["name"]
         for path in app.openapi()["paths"].values()

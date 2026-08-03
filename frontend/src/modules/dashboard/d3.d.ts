@@ -12,6 +12,14 @@ declare module 'd3' {
     nice(count?: number): ScaleLinear
     ticks(count?: number): number[]
   }
+  export interface ScaleBand<Domain extends string> {
+    (value: Domain): number | undefined
+    domain(values: Iterable<Domain>): ScaleBand<Domain>
+    range(values: Iterable<number>): ScaleBand<Domain>
+    padding(value: number): ScaleBand<Domain>
+    paddingInner(value: number): ScaleBand<Domain>
+    bandwidth(): number
+  }
   export interface LineGenerator<Datum> {
     (data: Iterable<Datum>): string | null
     x(accessor: (datum: Datum) => number): LineGenerator<Datum>
@@ -19,6 +27,7 @@ declare module 'd3' {
   }
   export function scalePoint<Domain extends string = string>(): ScalePoint<Domain>
   export function scaleLinear(): ScaleLinear
+  export function scaleBand<Domain extends string = string>(): ScaleBand<Domain>
   export function max<Datum>(values: Iterable<Datum>, accessor: (datum: Datum) => number): number | undefined
   export function line<Datum>(): LineGenerator<Datum>
 }
