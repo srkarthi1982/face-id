@@ -6,13 +6,14 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.modules.device.models import Device
 from app.modules.master.models import Department, Timing, Weekday
 from app.modules.personnel.models import Personnel
 from app.modules.recognition_records.models import RecognitionRecord
+from .constants import LATEST_ATTENDANCE_LOOKBACK_DAYS
 
 
 BUSINESS_TZ = ZoneInfo("Asia/Dubai")
@@ -78,6 +79,30 @@ def get_departments(db: Session) -> list[dict]:
 
 
 def get_latest_report_date(db: Session, department_id: int | None = None) -> date | None:
+    newest_query = (
+        db.query(func.max(RecognitionRecord.event_time))
+        .join(Personnel, Personnel.person_id_internal == RecognitionRecord.person_id_internal)
+        .join(Department, Department.id == Personnel.department_id)
+        .join(Timing, and_(Timing.department_id == Department.id, Timing.is_active.is_(True)))
+        .filter(
+            Personnel.is_active.is_(True),
+            Department.is_active.is_(True),
+            RecognitionRecord.event_type == "success",
+            RecognitionRecord.person_id_internal.isnot(None),
+            RecognitionRecord.event_time.isnot(None),
+        )
+    )
+    if department_id is not None:
+        newest_query = newest_query.filter(Department.id == department_id)
+    newest_event_time = newest_query.scalar()
+    if newest_event_time is None:
+        return None
+
+    newest_local_date = _to_dubai(newest_event_time).date()
+    lower_bound, _ = local_day_bounds_utc(
+        newest_local_date - timedelta(days=LATEST_ATTENDANCE_LOOKBACK_DAYS - 1),
+        newest_local_date,
+    )
     query = (
         db.query(RecognitionRecord.event_time, Timing.start_day, Timing.end_day)
         .join(Personnel, Personnel.person_id_internal == RecognitionRecord.person_id_internal)
@@ -89,6 +114,7 @@ def get_latest_report_date(db: Session, department_id: int | None = None) -> dat
             RecognitionRecord.event_type == "success",
             RecognitionRecord.person_id_internal.isnot(None),
             RecognitionRecord.event_time.isnot(None),
+            RecognitionRecord.event_time >= lower_bound,
         )
     )
     if department_id is not None:

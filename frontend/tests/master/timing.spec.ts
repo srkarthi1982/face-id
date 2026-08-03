@@ -37,7 +37,9 @@ async function mockTimingPage(page: Page, mode: PermissionMode = 'write') {
     const request = route.request()
     const url = new URL(request.url())
     calls.push({ method: request.method(), path: url.pathname, body: request.postDataJSON?.() })
-    if (url.pathname.endsWith('/departments') || url.pathname.endsWith('/departments?active_only=true')) return route.fulfill({ json: departments })
+    if (url.pathname.endsWith('/departments')) {
+      return route.fulfill(mode === 'write' ? { json: departments } : { status: 403, json: { detail: 'Missing required permission: department:read' } })
+    }
     if (url.pathname.endsWith('/timings') && request.method() === 'GET') return route.fulfill({ json: [timing] })
     if (url.pathname.endsWith('/timings') && request.method() === 'POST') return route.fulfill({ status: 201, json: { ...timing, id: 11, ...(request.postDataJSON() as object) } })
     if (url.pathname.endsWith('/timings/10') && request.method() === 'PUT') return route.fulfill({ json: { ...timing, ...(request.postDataJSON() as object) } })
@@ -56,6 +58,7 @@ test('read-only Timing users can view schedules without write controls', async (
   await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Delete' })).toHaveCount(0)
   expect(calls.every((call) => call.method === 'GET')).toBeTruthy()
+  expect(calls.some((call) => call.path.endsWith('/departments'))).toBeFalsy()
 })
 
 test('Timing write users can create, validate, edit, and delete timings', async ({ page }) => {

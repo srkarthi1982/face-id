@@ -8,7 +8,7 @@ interface TimingState {
     items: TimingResponse[]
     departments: DepartmentResponse[]
     isLoading: boolean
-    fetch: () => Promise<void>
+    fetch: (includeDepartments?: boolean) => Promise<void>
     create: (payload: TimingCreate) => Promise<void>
     update: (id: number, payload: TimingUpdate) => Promise<void>
     remove: (id: number) => Promise<void>
@@ -19,18 +19,20 @@ export const useTimingStore = create<TimingState>((set, get) => ({
     departments: [],
     isLoading: false,
 
-    fetch: async () => {
+    fetch: async (includeDepartments = false) => {
         set({ isLoading: true })
         try {
-            const [timingResult, departmentResult] = await Promise.all([
-                getTimings(),
-                getDepartments(true),
-            ])
+            const timingResult = await getTimings()
             throwIfError(timingResult.error)
-            throwIfError(departmentResult.error)
+            let departments = get().departments
+            if (includeDepartments) {
+                const departmentResult = await getDepartments(true)
+                throwIfError(departmentResult.error)
+                departments = departmentResult.data ?? []
+            }
             set({
                 items: timingResult.data ?? [],
-                departments: departmentResult.data ?? [],
+                departments,
                 isLoading: false,
             })
         } catch (error) {
@@ -42,18 +44,18 @@ export const useTimingStore = create<TimingState>((set, get) => ({
     create: async (payload) => {
         const { error } = await createTiming(payload)
         throwIfError(error)
-        await get().fetch()
+        await get().fetch(true)
     },
 
     update: async (id, payload) => {
         const { error } = await updateTiming(id, payload)
         throwIfError(error)
-        await get().fetch()
+        await get().fetch(true)
     },
 
     remove: async (id) => {
         const { error } = await deleteTiming(id)
         throwIfError(error)
-        await get().fetch()
+        await get().fetch(true)
     },
 }))

@@ -70,7 +70,7 @@ export default function TimingPage() {
     const [form, setForm] = useState<TimingForm>(emptyForm)
     const [error, setError] = useState<string | null>(null)
 
-    useEffect(() => { void fetch() }, [fetch])
+    useEffect(() => { void fetch(hasWrite) }, [fetch, hasWrite])
 
     const departmentOptions = useMemo(() => departments.map((department) => ({
         id: department.id,

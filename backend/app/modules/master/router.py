@@ -148,7 +148,7 @@ def delete_location_endpoint(
 @router.get("/departments/tree", response_model=List[DepartmentTreeItem])
 def get_departments_tree_endpoint(
     db: Session = Depends(get_db),
-    _ = Depends(require_permission(PermissionCode.DEPARTMENT_READ, PermissionCode.PERSONNEL_READ))
+    _ = Depends(require_permission(PermissionCode.DEPARTMENT_READ, PermissionCode.PERSONNEL_READ, PermissionCode.TIMING_WRITE))
 ):
     """Get full nested department tree."""
     return service.get_department_tree(db)
@@ -158,7 +158,7 @@ def get_departments_tree_endpoint(
 def get_departments_endpoint(
     active_only: bool = Query(False, description="Only return active departments"),
     db: Session = Depends(get_db),
-    _ = Depends(require_permission(PermissionCode.DEPARTMENT_READ, PermissionCode.PERSONNEL_READ))
+    _ = Depends(require_permission(PermissionCode.DEPARTMENT_READ, PermissionCode.PERSONNEL_READ, PermissionCode.TIMING_WRITE))
 ):
     """Get flat list of departments."""
     return service.get_departments(db, active_only)
@@ -168,7 +168,7 @@ def get_departments_endpoint(
 def get_department_endpoint(
     department_id: int,
     db: Session = Depends(get_db),
-    _ = Depends(require_permission(PermissionCode.DEPARTMENT_READ, PermissionCode.PERSONNEL_READ))
+    _ = Depends(require_permission(PermissionCode.DEPARTMENT_READ, PermissionCode.PERSONNEL_READ, PermissionCode.TIMING_WRITE))
 ):
     """Get single department by ID."""
     return service.get_department_by_id(db, department_id)

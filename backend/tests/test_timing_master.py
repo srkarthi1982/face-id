@@ -201,6 +201,14 @@ def test_timing_api_write_permission_allows_mutations(db: Session):
     assert client.delete(f"/master-data/timings/{timing_id}").status_code == 204
 
 
+def test_timing_write_permission_can_load_department_options(db: Session):
+    service.create_department(db, DepartmentCreate(name="Ops"))
+    client = _permission_client(db, [PermissionCode.TIMING_WRITE.value])
+    response = client.get("/master-data/departments?active_only=true")
+    assert response.status_code == 200
+    assert response.json()[0]["name"] == "Ops"
+
+
 def test_permission_codes_registered():
     assert PermissionCode.DEPARTMENT_READ.value == "department:read"
     assert PermissionCode.DEPARTMENT_WRITE.value == "department:write"

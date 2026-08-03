@@ -17,6 +17,11 @@ The Department control contains dynamically loaded active departments. `ALL` is 
 
 All requests use the OpenAPI-generated SDK from `src/api/generated`. The initial request omits dates so PostgreSQL attendance data determines the effective source range, which the page then displays. Durations remain integer seconds in state and are converted only for localized display. The module does not use polling, server-sent events, or WebSockets.
 
+Dashboard analytics requests are intentionally bounded to a maximum 366-day
+range for the PostgreSQL V1 implementation. The backend also resolves the
+default latest attendance date from a bounded recent event-time window and
+applies active Timing working-day rules before choosing the effective date.
+
 ## UI and accessibility
 
 - KPI cards show employee, duration, report-day, and exception totals.

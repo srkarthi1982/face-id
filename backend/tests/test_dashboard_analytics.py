@@ -15,7 +15,7 @@ from app.core import deps
 from app.core.database import Base, get_db
 from app.core.permissions import PermissionCode, sync_permissions_to_db
 from app.modules import import_all_models
-from app.modules.dashboard import repository, router as dashboard_router, service
+from app.modules.dashboard import constants, repository, router as dashboard_router, service
 from app.modules.dashboard.schemas import DashboardTrendGranularity
 from app.modules.device.models import Device
 from app.modules.master.models import Department, Timing, Weekday
@@ -100,6 +100,12 @@ def test_dashboard_registration_uses_postgres_department_routes_only():
     for removed_reference in ("LU" + "NA_DATABASE_URL", "db" + "o.", "pyo" + "dbc"):
         assert removed_reference not in source
     assert "PermissionCode.ANALYTICS_READ" in inspect.getsource(router_module)
+    assert constants.OVERVIEW_MAX_DAYS == 366
+    assert constants.RANKING_MAX_DAYS == 366
+    assert constants.EXCEPTIONS_MAX_DAYS == 366
+    assert constants.TREND_MAX_DAYS == {"day": 366, "week": 366, "month": 366, "year": 366}
+    assert "LATEST_ATTENDANCE_LOOKBACK_DAYS" in inspect.getsource(repository.get_latest_report_date)
+    assert "func.max(RecognitionRecord.event_time)" in inspect.getsource(repository.get_latest_report_date)
 
 
 def test_attendance_uses_event_time_dubai_day_and_ignores_created_at(db: Session):

@@ -2,7 +2,10 @@ import { defineConfig, devices } from '@playwright/test'
 import { existsSync } from 'node:fs'
 
 const officeChromePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || (existsSync(officeChromePath) ? officeChromePath : undefined)
+const macChromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
+  || (existsSync(officeChromePath) ? officeChromePath : undefined)
+  || (existsSync(macChromePath) ? macChromePath : undefined)
 
 export default defineConfig({
   testDir: './tests',
