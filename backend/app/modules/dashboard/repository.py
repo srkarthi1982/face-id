@@ -6,14 +6,14 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import Date, and_, case, cast, extract, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.modules.device.models import Device
 from app.modules.master.models import Department, Timing, Weekday
 from app.modules.personnel.models import Personnel
 from app.modules.recognition_records.models import RecognitionRecord
-from .constants import LATEST_ATTENDANCE_LOOKBACK_DAYS
+from .constants import LATEST_ATTENDANCE_DATE_SCAN_LIMIT, LATEST_ATTENDANCE_LOOKBACK_DAYS
 
 
 BUSINESS_TZ = ZoneInfo("Asia/Dubai")
@@ -79,7 +79,7 @@ def get_departments(db: Session) -> list[dict]:
 
 
 def get_latest_report_date(db: Session, department_id: int | None = None) -> date | None:
-    newest_query = (
+    base_query = (
         db.query(func.max(RecognitionRecord.event_time))
         .join(Personnel, Personnel.person_id_internal == RecognitionRecord.person_id_internal)
         .join(Department, Department.id == Personnel.department_id)
@@ -93,8 +93,8 @@ def get_latest_report_date(db: Session, department_id: int | None = None) -> dat
         )
     )
     if department_id is not None:
-        newest_query = newest_query.filter(Department.id == department_id)
-    newest_event_time = newest_query.scalar()
+        base_query = base_query.filter(Department.id == department_id)
+    newest_event_time = base_query.scalar()
     if newest_event_time is None:
         return None
 
@@ -103,6 +103,51 @@ def get_latest_report_date(db: Session, department_id: int | None = None) -> dat
         newest_local_date - timedelta(days=LATEST_ATTENDANCE_LOOKBACK_DAYS - 1),
         newest_local_date,
     )
+
+    if db.bind and db.bind.dialect.name == "postgresql":
+        local_time = func.timezone("Asia/Dubai", RecognitionRecord.event_time)
+        local_date = cast(local_time, Date)
+        iso_weekday = extract("isodow", local_time)
+        start_iso = case(
+            (Timing.start_day == Weekday.MONDAY, 1),
+            (Timing.start_day == Weekday.TUESDAY, 2),
+            (Timing.start_day == Weekday.WEDNESDAY, 3),
+            (Timing.start_day == Weekday.THURSDAY, 4),
+            (Timing.start_day == Weekday.FRIDAY, 5),
+            (Timing.start_day == Weekday.SATURDAY, 6),
+            else_=7,
+        )
+        end_iso = case(
+            (Timing.end_day == Weekday.MONDAY, 1),
+            (Timing.end_day == Weekday.TUESDAY, 2),
+            (Timing.end_day == Weekday.WEDNESDAY, 3),
+            (Timing.end_day == Weekday.THURSDAY, 4),
+            (Timing.end_day == Weekday.FRIDAY, 5),
+            (Timing.end_day == Weekday.SATURDAY, 6),
+            else_=7,
+        )
+        query = (
+            db.query(func.max(local_date))
+            .join(Personnel, Personnel.person_id_internal == RecognitionRecord.person_id_internal)
+            .join(Department, Department.id == Personnel.department_id)
+            .join(Timing, and_(Timing.department_id == Department.id, Timing.is_active.is_(True)))
+            .filter(
+                Personnel.is_active.is_(True),
+                Department.is_active.is_(True),
+                RecognitionRecord.event_type == "success",
+                RecognitionRecord.person_id_internal.isnot(None),
+                RecognitionRecord.event_time.isnot(None),
+                RecognitionRecord.event_time >= lower_bound,
+                or_(
+                    and_(start_iso <= end_iso, iso_weekday >= start_iso, iso_weekday <= end_iso),
+                    and_(start_iso > end_iso, or_(iso_weekday >= start_iso, iso_weekday <= end_iso)),
+                ),
+            )
+        )
+        if department_id is not None:
+            query = query.filter(Department.id == department_id)
+        return query.scalar()
+
     query = (
         db.query(RecognitionRecord.event_time, Timing.start_day, Timing.end_day)
         .join(Personnel, Personnel.person_id_internal == RecognitionRecord.person_id_internal)
@@ -119,7 +164,7 @@ def get_latest_report_date(db: Session, department_id: int | None = None) -> dat
     )
     if department_id is not None:
         query = query.filter(Department.id == department_id)
-    for event_time, start_day, end_day in query.order_by(RecognitionRecord.event_time.desc(), RecognitionRecord.id.desc()).all():
+    for event_time, start_day, end_day in query.order_by(RecognitionRecord.event_time.desc(), RecognitionRecord.id.desc()).limit(LATEST_ATTENDANCE_DATE_SCAN_LIMIT):
         local_date = _to_dubai(event_time).date()
         if local_date.weekday() in weekday_values(start_day, end_day):
             return local_date

@@ -104,8 +104,11 @@ def test_dashboard_registration_uses_postgres_department_routes_only():
     assert constants.RANKING_MAX_DAYS == 366
     assert constants.EXCEPTIONS_MAX_DAYS == 366
     assert constants.TREND_MAX_DAYS == {"day": 366, "week": 366, "month": 366, "year": 366}
-    assert "LATEST_ATTENDANCE_LOOKBACK_DAYS" in inspect.getsource(repository.get_latest_report_date)
-    assert "func.max(RecognitionRecord.event_time)" in inspect.getsource(repository.get_latest_report_date)
+    latest_source = inspect.getsource(repository.get_latest_report_date)
+    assert "LATEST_ATTENDANCE_LOOKBACK_DAYS" in latest_source
+    assert "func.max(local_date)" in latest_source
+    assert "extract(\"isodow\", local_time)" in latest_source
+    assert ".limit(LATEST_ATTENDANCE_DATE_SCAN_LIMIT)" in latest_source
 
 
 def test_attendance_uses_event_time_dubai_day_and_ignores_created_at(db: Session):
