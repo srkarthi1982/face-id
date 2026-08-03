@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -32,7 +32,7 @@ from app.modules import import_all_models
 from app.modules.audit.models import AuditLog
 from app.modules.callbacks.models import CallbackConfig
 from app.modules.device.models import Device
-from app.modules.master.models import Location, LocationType, Unit, UnitType
+from app.modules.master.models import Department, Location, LocationType, Timing, Unit, UnitType, Weekday
 from app.modules.pat.models import PersonalAccessToken
 from app.modules.person_mapping.models import DevicePersonMapping
 from app.modules.personnel.models import Personnel
@@ -136,6 +136,61 @@ def seed_locations(db, units: dict[str, Unit], counts: dict[str, int]) -> dict[s
     return result
 
 
+def seed_departments(db, counts: dict[str, int]) -> dict[str, Department]:
+    specs = [
+        ("operations", "Operations", "OPS", "Operations department", None, 10),
+        ("security", "Security", "SEC", "Security operations department", "operations", 20),
+        ("headquarters", "Headquarters", "HQ", "Headquarters support department", "operations", 30),
+    ]
+    result: dict[str, Department] = {}
+    for key, name, code, description, parent_key, order in specs:
+        parent = result.get(parent_key) if parent_key else None
+        department = db.query(Department).filter(
+            Department.code == code,
+            Department.parent_id == (parent.id if parent else None),
+        ).first()
+        if department is None:
+            parent_path = parent.path.rstrip("/") if parent else ""
+            department = Department(
+                name=name,
+                code=code,
+                description=description,
+                parent_id=parent.id if parent else None,
+                path=f"{parent_path}/{name}",
+                is_active=True,
+                sort_order=order,
+            )
+            db.add(department)
+            db.flush()
+            counts["departments"] += 1
+        result[key] = department
+    return result
+
+
+def seed_timings(db, departments: dict[str, Department], counts: dict[str, int]) -> None:
+    specs = [
+        ("operations", Weekday.MONDAY, Weekday.FRIDAY, time(8, 0), time(16, 0)),
+        ("security", Weekday.MONDAY, Weekday.SATURDAY, time(7, 0), time(15, 0)),
+        ("headquarters", Weekday.MONDAY, Weekday.FRIDAY, time(8, 30), time(16, 30)),
+    ]
+    for department_key, start_day, end_day, start_time, end_time in specs:
+        department = departments[department_key]
+        timing = db.query(Timing).filter(
+            Timing.department_id == department.id,
+            Timing.is_active.is_(True),
+        ).first()
+        if timing is None:
+            db.add(Timing(
+                department_id=department.id,
+                start_day=start_day,
+                end_day=end_day,
+                start_time=start_time,
+                end_time=end_time,
+                is_active=True,
+            ))
+            counts["timings"] += 1
+
+
 def seed_devices(db, locations: dict[str, Location], counts: dict[str, int]) -> dict[str, Device]:
     specs = [
         ("gate_in", "FID-GATE-IN-01", "Main Gate Entry", "192.0.2.11", "main_gate", "online", "SN-GATE-IN-001"),
@@ -169,7 +224,12 @@ def seed_devices(db, locations: dict[str, Location], counts: dict[str, int]) -> 
     return result
 
 
-def seed_personnel(db, locations: dict[str, Location], counts: dict[str, int]) -> dict[str, Personnel]:
+def seed_personnel(
+    db,
+    locations: dict[str, Location],
+    departments: dict[str, Department],
+    counts: dict[str, int],
+) -> dict[str, Personnel]:
     specs = [
         ("P-1001", "EMP-1001", "Ahmed Al Mansoori", 1, "ahmed.mansoori@example.com", "+971501110001", "Operations Officer", "1988-03-14", "2014-09-01"),
         ("P-1002", "EMP-1002", "Mariam Al Suwaidi", 2, "mariam.suwaidi@example.com", "+971501110002", "Security Supervisor", "1990-11-22", "2016-02-15"),
@@ -179,13 +239,14 @@ def seed_personnel(db, locations: dict[str, Location], counts: dict[str, int]) -
     ]
     result: dict[str, Personnel] = {}
     for index, (person_id, emp_no, name, gender, email, phone, position, dob, hired) in enumerate(specs, start=1):
+        department_id = departments["security"].id if index in (2, 5) else departments["headquarters"].id
         person, created = get_or_create(
             db,
             Personnel,
             person_id_internal=person_id,
             defaults={
                 "org_id": locations["base"].id,
-                "department_id": locations["security"].id if index in (2, 5) else locations["hq_building"].id,
+                "department_id": department_id,
                 "emp_no": emp_no,
                 "person_id_device": f"DEV-{1000 + index}",
                 "full_name": name,
@@ -205,6 +266,9 @@ def seed_personnel(db, locations: dict[str, Location], counts: dict[str, int]) -
                 "is_active": True,
             },
         )
+        if not created and person.department_id != department_id:
+            person.department_id = department_id
+            db.add(person)
         counts["personnel"] += int(created)
         result[person_id] = person
     return result
@@ -297,7 +361,11 @@ def seed_recognition_records(db, people: dict[str, Personnel], devices: dict[str
             query = query.filter(RecognitionRecord.person_id_internal.is_(None))
         else:
             query = query.filter(RecognitionRecord.person_id_internal == person_id)
-        if query.first() is not None:
+        existing = query.first()
+        if existing is not None:
+            if existing.person_id_internal is not None and existing.event_type != "success":
+                existing.event_type = "success"
+                db.add(existing)
             continue
         person = people.get(person_id) if person_id else None
         db.add(RecognitionRecord(
@@ -306,7 +374,7 @@ def seed_recognition_records(db, people: dict[str, Personnel], devices: dict[str
             person_id_device=person.person_id_device if person else None,
             record_type="face_recognition",
             mode="face",
-            event_type=event_type,
+            event_type="success" if person_id else event_type,
             event_name=event_name,
             event_time=event_time,
             source="seed",
@@ -352,6 +420,8 @@ def main() -> None:
         "countries": 0,
         "units": 0,
         "locations": 0,
+        "departments": 0,
+        "timings": 0,
         "devices": 0,
         "personnel": 0,
         "photo_registrations": 0,
@@ -366,8 +436,10 @@ def main() -> None:
         seed_countries(db, counts)
         units = seed_units(db, counts)
         locations = seed_locations(db, units, counts)
+        departments = seed_departments(db, counts)
+        seed_timings(db, departments, counts)
         devices = seed_devices(db, locations, counts)
-        people = seed_personnel(db, locations, counts)
+        people = seed_personnel(db, locations, departments, counts)
         seed_photos_and_mappings(db, people, devices, counts)
         seed_callbacks(db, devices, counts)
         seed_recognition_records(db, people, devices, counts)
