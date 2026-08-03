@@ -1,4 +1,4 @@
-"""Read-only dashboard analytics module with lazy Luna connectivity."""
+"""Read-only PostgreSQL attendance dashboard analytics module."""
 
 from .router import router
 

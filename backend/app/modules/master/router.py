@@ -6,7 +6,9 @@ from app.core.permissions import PermissionCode
 from app.modules.master import service
 from app.modules.master.models import LocationType, UnitType
 from app.modules.master.schemas import (
+    DepartmentCreate, DepartmentUpdate, DepartmentResponse, DepartmentTreeItem,
     LocationCreate, LocationUpdate, LocationResponse, LocationTreeItem,
+    TimingCreate, TimingUpdate, TimingResponse,
     UnitCreate, UnitUpdate, UnitResponse, UnitTreeItem,
     LocationChainCreate, LocationChainResponse, UnitChainCreate, UnitChainResponse
 )
@@ -141,6 +143,117 @@ def delete_location_endpoint(
 ):
     """Delete location."""
     service.delete_location(db, location_id)
+
+
+@router.get("/departments/tree", response_model=List[DepartmentTreeItem])
+def get_departments_tree_endpoint(
+    db: Session = Depends(get_db),
+    _ = Depends(require_permission(PermissionCode.DEPARTMENT_READ, PermissionCode.PERSONNEL_READ))
+):
+    """Get full nested department tree."""
+    return service.get_department_tree(db)
+
+
+@router.get("/departments", response_model=List[DepartmentResponse])
+def get_departments_endpoint(
+    active_only: bool = Query(False, description="Only return active departments"),
+    db: Session = Depends(get_db),
+    _ = Depends(require_permission(PermissionCode.DEPARTMENT_READ, PermissionCode.PERSONNEL_READ))
+):
+    """Get flat list of departments."""
+    return service.get_departments(db, active_only)
+
+
+@router.get("/departments/{department_id}", response_model=DepartmentResponse)
+def get_department_endpoint(
+    department_id: int,
+    db: Session = Depends(get_db),
+    _ = Depends(require_permission(PermissionCode.DEPARTMENT_READ, PermissionCode.PERSONNEL_READ))
+):
+    """Get single department by ID."""
+    return service.get_department_by_id(db, department_id)
+
+
+@router.post("/departments", response_model=DepartmentResponse, status_code=status.HTTP_201_CREATED)
+def create_department_endpoint(
+    department: DepartmentCreate,
+    db: Session = Depends(get_db),
+    _ = Depends(require_permission(PermissionCode.DEPARTMENT_WRITE))
+):
+    """Create department."""
+    return service.create_department(db, department)
+
+
+@router.put("/departments/{department_id}", response_model=DepartmentResponse)
+def update_department_endpoint(
+    department_id: int,
+    department: DepartmentUpdate,
+    db: Session = Depends(get_db),
+    _ = Depends(require_permission(PermissionCode.DEPARTMENT_WRITE))
+):
+    """Update department."""
+    return service.update_department(db, department_id, department)
+
+
+@router.delete("/departments/{department_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_department_endpoint(
+    department_id: int,
+    db: Session = Depends(get_db),
+    _ = Depends(require_permission(PermissionCode.DEPARTMENT_WRITE))
+):
+    """Delete department."""
+    service.delete_department(db, department_id)
+
+
+@router.get("/timings", response_model=List[TimingResponse])
+def get_timings_endpoint(
+    active_only: bool = Query(False, description="Only return active timings"),
+    db: Session = Depends(get_db),
+    _ = Depends(require_permission(PermissionCode.TIMING_READ))
+):
+    """Get department timings."""
+    return service.get_timings(db, active_only)
+
+
+@router.get("/timings/{timing_id}", response_model=TimingResponse)
+def get_timing_endpoint(
+    timing_id: int,
+    db: Session = Depends(get_db),
+    _ = Depends(require_permission(PermissionCode.TIMING_READ))
+):
+    """Get timing by ID."""
+    return service._timing_response(service.get_timing_by_id(db, timing_id))
+
+
+@router.post("/timings", response_model=TimingResponse, status_code=status.HTTP_201_CREATED)
+def create_timing_endpoint(
+    timing: TimingCreate,
+    db: Session = Depends(get_db),
+    _ = Depends(require_permission(PermissionCode.TIMING_WRITE))
+):
+    """Create department timing."""
+    return service.create_timing(db, timing)
+
+
+@router.put("/timings/{timing_id}", response_model=TimingResponse)
+def update_timing_endpoint(
+    timing_id: int,
+    timing: TimingUpdate,
+    db: Session = Depends(get_db),
+    _ = Depends(require_permission(PermissionCode.TIMING_WRITE))
+):
+    """Update department timing."""
+    return service.update_timing(db, timing_id, timing)
+
+
+@router.delete("/timings/{timing_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_timing_endpoint(
+    timing_id: int,
+    db: Session = Depends(get_db),
+    _ = Depends(require_permission(PermissionCode.TIMING_WRITE))
+):
+    """Delete department timing."""
+    service.delete_timing(db, timing_id)
 
 
 @router.get("/units/tree", response_model=List[UnitTreeItem])

@@ -19,15 +19,16 @@ class DashboardTrendGranularity(str, Enum):
     YEAR = "year"
 
 
-class DashboardOrganizationOption(BaseModel):
-    org_id: str
+class DashboardDepartmentOption(BaseModel):
+    department_id: int
+    department_name: str
 
 
 class DashboardDateRange(BaseModel):
     effective_start_date: date | None
     effective_end_date: date | None
     source_latest_report_date: date | None
-    org_id: str | None
+    department_id: int | None
 
 
 class DurationTotals(BaseModel):
@@ -67,12 +68,12 @@ class DashboardTrend(DashboardDateRange):
 
 class EmployeeWorkHoursRankingItem(DurationTotals):
     rank: int = Field(ge=1)
-    org_id: str | None
+    department_id: int | None
+    department_name: str | None
     employee_key: str
     person_id: str | None
     person_no: str | None
     person_name: str | None
-    department_name: str | None
     report_day_count: int = Field(ge=0)
 
 
@@ -84,8 +85,10 @@ class EmployeeWorkHoursRanking(DashboardDateRange):
 
 class AttendanceExceptionItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    id: int
-    org_id: str | None
+    id: str
+    exception_type: str
+    department_id: int | None
+    department_name: str | None
     person_id: str | None
     person_no: str | None
     person_name: str | None

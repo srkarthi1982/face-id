@@ -2,29 +2,29 @@ import '../../api/client'
 import { create } from 'zustand'
 import {
   attendanceExceptionsApiV1DashboardAttendanceExceptionsGet as fetchExceptions,
-  organizationsApiV1DashboardOrganizationsGet as fetchOrganizations,
+  departmentsApiV1DashboardDepartmentsGet as fetchDepartments,
   overviewApiV1DashboardOverviewGet as fetchOverview,
   workHoursRankingApiV1DashboardWorkHoursRankingGet as fetchRanking,
 } from '../../api/generated'
-import type { SuccessResponseDashboardOverview, SuccessResponseEmployeeWorkHoursRanking, SuccessResponseListAttendanceExceptionItem, SuccessResponseListDashboardOrganizationOption } from '../../api/generated'
-import type { DashboardFilters, DashboardOrganizationOption, DashboardOverview, EmployeeWorkHoursRanking, ExceptionResult, PanelState } from './types'
+import type { SuccessResponseDashboardOverview, SuccessResponseEmployeeWorkHoursRanking, SuccessResponseListAttendanceExceptionItem, SuccessResponseListDashboardDepartmentOption } from '../../api/generated'
+import type { DashboardDepartmentOption, DashboardFilters, DashboardOverview, EmployeeWorkHoursRanking, ExceptionResult, PanelState } from './types'
 
-type Section = 'organizations' | 'overview' | 'comparison' | 'ranking' | 'exceptions'
+type Section = 'departments' | 'overview' | 'comparison' | 'ranking' | 'exceptions'
 type FilterError = 'dateRange' | null
 type SdkResult<T> = { data?: T; error?: unknown; response: Response }
 
 const analyticsSections: Section[] = ['overview', 'comparison', 'ranking', 'exceptions']
-const sections: Section[] = ['organizations', ...analyticsSections]
+const sections: Section[] = ['departments', ...analyticsSections]
 const defaults = (): DashboardFilters => ({ granularity: 'week', ranking_limit: 10, exception_page: 1, exception_page_size: 20 })
 const panel = <T>(): PanelState<T> => ({ status: 'idle', data: null })
-const controllers: Record<Section, AbortController | null> = { organizations: null, overview: null, comparison: null, ranking: null, exceptions: null }
-const requestIds: Record<Section, number> = { organizations: 0, overview: 0, comparison: 0, ranking: 0, exceptions: 0 }
+const controllers: Record<Section, AbortController | null> = { departments: null, overview: null, comparison: null, ranking: null, exceptions: null }
+const requestIds: Record<Section, number> = { departments: 0, overview: 0, comparison: 0, ranking: 0, exceptions: 0 }
 
 function query(filters: DashboardFilters) {
   return {
     ...(filters.start_date ? { start_date: filters.start_date } : {}),
     ...(filters.end_date ? { end_date: filters.end_date } : {}),
-    ...(filters.org_id?.trim() ? { org_id: filters.org_id.trim() } : {}),
+    ...(filters.department_id ? { department_id: filters.department_id } : {}),
   }
 }
 
@@ -46,7 +46,7 @@ type State = {
   draft: DashboardFilters
   applied: DashboardFilters
   filterError: FilterError
-  organizations: PanelState<DashboardOrganizationOption[]>
+  departments: PanelState<DashboardDepartmentOption[]>
   overview: PanelState<DashboardOverview>
   comparison: PanelState<EmployeeWorkHoursRanking>
   ranking: PanelState<EmployeeWorkHoursRanking>
@@ -89,7 +89,7 @@ export const useDashboardStore = create<State>((set, get) => {
 
   const loadSection = async (section: Section) => {
     const filters = get().applied; const base = query(filters)
-    if (section === 'organizations') return run<SuccessResponseListDashboardOrganizationOption, DashboardOrganizationOption[]>(section, (signal) => fetchOrganizations({ signal }), (data) => data.data, () => false)
+    if (section === 'departments') return run<SuccessResponseListDashboardDepartmentOption, DashboardDepartmentOption[]>(section, (signal) => fetchDepartments({ signal }), (data) => data.data, () => false)
     if (section === 'overview') return run<SuccessResponseDashboardOverview, DashboardOverview>(section, (signal) => fetchOverview({ query: base, signal }), (data) => data.data, (data) => data.data_status === 'empty')
     if (section === 'comparison') return run<SuccessResponseEmployeeWorkHoursRanking, EmployeeWorkHoursRanking>(section, (signal) => fetchRanking({ query: { ...base, include_all: true, period: filters.granularity }, signal }), (data) => data.data, (data) => data.items.length === 0)
     if (section === 'ranking') return run<SuccessResponseEmployeeWorkHoursRanking, EmployeeWorkHoursRanking>(section, (signal) => fetchRanking({ query: { ...base, limit: filters.ranking_limit }, signal }), (data) => data.data, (data) => data.items.length === 0)
@@ -98,7 +98,7 @@ export const useDashboardStore = create<State>((set, get) => {
 
   return {
     draft: defaults(), applied: defaults(), filterError: null,
-    organizations: panel(), overview: panel(), comparison: panel(), ranking: panel(), exceptions: panel(),
+    departments: panel(), overview: panel(), comparison: panel(), ranking: panel(), exceptions: panel(),
     setDraft: (patch) => set((state) => ({ draft: { ...state.draft, ...patch }, filterError: null })),
     initialize: async () => { await Promise.allSettled(sections.map(loadSection)) },
     loadAll: async () => { await Promise.allSettled(analyticsSections.map(loadSection)) },

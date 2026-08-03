@@ -1,130 +1,22 @@
-# Dashboard Luna Data Source
+# Dashboard PostgreSQL Attendance Source
 
-The dashboard reads attendance data from Luna, an external and read-only data
-source. Local development simulates Luna in PostgreSQL database `luna_db` under
-schema `dbo`; production will use the office Microsoft SQL Server database.
-`LUNA_DATABASE_URL` provides the connection transport without changing the
-application's primary PostgreSQL database configuration.
+The dashboard reads attendance analytics from the primary PostgreSQL database.
+It uses active departments, active personnel, active department timings, and
+successful recognition events.
 
-The primary Face ID engine, sessions, metadata, transactions, and Alembic chain
-must remain completely separate from Luna. Alembic and runtime schema creation
-are prohibited for Luna. Only the explicit local setup command under
-`backend/scripts/luna` may create the local PostgreSQL simulation.
+Attendance calendar grouping uses `Asia/Dubai`. Queries fetch recognition events
+with a bounded UTC range that corresponds to the requested Dubai-local date
+range. Calculations use `recognition_records.event_time`; `created_at` is only
+ingestion metadata.
 
-Application-level restriction and database-level enforcement are distinct:
+V1 limitations:
 
-- The dashboard repository owns explicit parameterized T-SQL `SELECT` queries
-  against the declared reporting tables. SQLAlchemy is used only for connection
-  lifecycle and bound-parameter execution; it does not construct Luna SQL.
-  Request values are never interpolated into SQL text.
-- The configured database login must have database-enforced SELECT-only
-  privileges. Database permissions are the authoritative write-prevention
-  control. An administrator URL is never suitable for runtime deployment.
-
-For SQL Server, `ApplicationIntent=ReadOnly` is an optional connection hint, not
-a replacement for database permissions.
-
-SQL Server requires the optional `mssql` dependency and a compatible installed
-ODBC driver. The configured name must match `pyodbc.drivers()` exactly; the
-office-proven `SQL Server` driver is supported and Driver 17/18 is not mandatory. Changing
-`LUNA_DATABASE_URL` alone is not sufficient on a fresh host. URL parsing proves
-neither driver availability nor connectivity. Production SQL Server connectivity
-remains unverified until tested in an approved environment.
-
-Future dashboard endpoints must require the exact `analytics:read` permission.
-They must never authorize against an `Admin` role name. Administrators and future
-normal-user roles can both access the dashboard when that permission is assigned.
-
-Future reporting sources:
-
-- `saas_ca_report_daily`: official working-hour totals.
-- `saas_ca_clock_record`: raw entry/exit detail.
-- `saas_ca_report_exception`: missing or exceptional attendance detail.
-- `saas_ca_person`: Luna person reference data.
-
-Local simulation duration fields are stored in seconds. Seed values provisionally
-map `clock_type=1` to entry and `clock_type=2` to exit. Both assumptions require
-validation against real Luna values before production integration.
-
-## Read-only analytics APIs
-
-All routes are under `/api/v1/dashboard` and require exactly
-`analytics:read` through the standard permission dependency:
-
-- `GET /overview` returns source status, effective dates, row/day/employee
-  counts, reported-exception count, and official duration totals.
-- `GET /organizations` returns sorted, distinct active Luna organization IDs
-  represented in daily reports, exception reports, or person records.
-- `GET /work-hours/trend` returns day, ISO-week, calendar-month, or
-  calendar-year duration buckets.
-- `GET /work-hours/ranking` ranks employees by official actual seconds.
-- `GET /attendance-exceptions` returns stable, paginated, generic reported
-  exceptions with optional Luna person enrichment.
-
-Ranking remains top-10 by default and accepts its existing bounded `limit`.
-The additive `include_all=true` mode returns every employee in the filtered
-date/organization scope for the comparison chart, using the same deterministic
-actual-work descending order and calculations. Chart requests may also pass
-`period=day|week|month|year`; the server clips that period to the resolved global
-range ending on its effective end date without changing ordinary ranking calls.
-
-Official duration metrics come only from `dbo.saas_ca_report_daily` and remain
-integer seconds. Reported exception counts and records come only from
-`dbo.saas_ca_report_exception`. `dbo.saas_ca_person` is used only for
-deterministic exception enrichment; when duplicates exist, the lowest active
-person-row ID is selected. The runtime analytics API does not query
-`dbo.saas_ca_clock_record`.
-
-The employee comparison chart consumes employee-level ranking data derived from
-the official daily report. It does not calculate work time from raw clock records.
-
-Organization options are read-only IDs because the supplied Luna contract has
-no organization-name table. A trimmed ID is the canonical organization
-identity; null, empty, and whitespace-only IDs mean no organization. Every
-filter, grouping, response, and exception-person join uses that rule without
-case-folding. The options query excludes blanks and deleted rows, deduplicates
-each of the three approved sources before one bounded union, then globally
-deduplicates and sorts the result. Selecting `ALL` in the frontend means no
-`org_id` query parameter.
-
-An explicit end date controls the effective range even when an organization has
-no daily reports, allowing exception-only organizations to return exception
-data. The daily-report latest date remains nullable response metadata in that
-case. Without an explicit end date, a scoped daily latest date is still required
-to derive the range.
-
-Analytics queries aggregate in Luna SQL before returning results to the
-application: overview is constant-sized, trend returns at most one totals row
-per exact report date, and ranking returns at most the requested limit. The
-employee counts for all non-daily trend periods are fetched in one parameterized
-cross-dialect statement, rather than one query per period. The
-internal employee identity is the full tuple `(org_id, identity source,
-normalized identity value)`, preferring a trimmed `person_id` and falling back
-to a trimmed `person_no`. Therefore the displayed `employee_key` is not globally
-unique by itself. Ranking includes `org_id`, and deterministically selects the
-minimum non-null person number, person name, and department across contributing
-daily rows.
-
-When dates are omitted, the effective end date is the latest active daily
-report date for the optional organization, and the start is 29 calendar days
-earlier (a 30-day inclusive window). A reachable source without daily reports
-returns explicit empty HTTP 200 responses and never substitutes the current
-server date. Maximum inclusive ranges are 3,660 days for overview, ranking,
-exceptions, month trend, and year trend; 1,096 days for week trend; and 366
-days for day trend.
-
-ISO weeks begin Monday and end Sunday. Trend period boundaries are clipped to
-the effective request range. Week/month/year bucketing occurs in Python so the
-business queries remain portable between PostgreSQL and Microsoft SQL Server.
-
-Every query assumes vendor `del_status=0` means active. That semantic remains
-production validation work. Exception output deliberately says only
-"attendance exception" or "reported exception" because no confirmed reason
-field exists. Missing-entry, missing-exit, and unmatched entry/exit diagnostics
-are not implemented. Raw-clock pairing, `clock_type` interpretation, punch
-timezone handling, and raw-clock-derived work calculations are not implemented.
-
-The APIs and read-only privileges are validated against the local PostgreSQL
-simulation. Statements are compilation-tested for the MSSQL dialect, but real
-production SQL Server connectivity remains untested pending an approved
-environment and confirmation of vendor field semantics.
+- No overnight shifts.
+- No multiple shifts.
+- No grace period.
+- No breaks.
+- No holiday calendar.
+- No effective-dated Timing history.
+- Changing a Timing can recalculate historical dashboard output.
+- Personnel in departments without an active Timing are excluded from scheduled
+  attendance rather than assuming default hours.

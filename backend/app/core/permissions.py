@@ -38,6 +38,10 @@ class PermissionCode(str, enum.Enum):
     LOCATION_WRITE = "location:write"
     UNIT_READ = "unit:read"
     UNIT_WRITE = "unit:write"
+    DEPARTMENT_READ = "department:read"
+    DEPARTMENT_WRITE = "department:write"
+    TIMING_READ = "timing:read"
+    TIMING_WRITE = "timing:write"
 
 class _PermissionMeta:
     __slots__ = ("code", "name", "description", "module")
@@ -65,6 +69,10 @@ PERMISSION_REGISTRY: list[_PermissionMeta] = [
     _PermissionMeta(PermissionCode.LOCATION_WRITE, "Write Locations", "Create, update, delete locations", "master-data"),
     _PermissionMeta(PermissionCode.UNIT_READ, "Read Units", "View unit hierarchy", "master-data"),
     _PermissionMeta(PermissionCode.UNIT_WRITE, "Write Units", "Create, update, delete units", "master-data"),
+    _PermissionMeta(PermissionCode.DEPARTMENT_READ, "Read Departments", "View department hierarchy", "master-data"),
+    _PermissionMeta(PermissionCode.DEPARTMENT_WRITE, "Write Departments", "Create, update, delete departments", "master-data"),
+    _PermissionMeta(PermissionCode.TIMING_READ, "Read Timings", "View department timing rules", "master-data"),
+    _PermissionMeta(PermissionCode.TIMING_WRITE, "Write Timings", "Create, update, delete department timing rules", "master-data"),
 ]
 
 DEFAULT_ROLE_PERMISSIONS: dict[str, list[PermissionCode]] = {

@@ -1,5 +1,7 @@
 from app.core.database import Base, TimestampMixin
-from sqlalchemy import String, Boolean, Integer, ForeignKey, Enum, UniqueConstraint
+from datetime import time
+
+from sqlalchemy import String, Boolean, Integer, ForeignKey, Enum, UniqueConstraint, Time, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional, TYPE_CHECKING
 import enum
@@ -52,9 +54,78 @@ class Location(Base, TimestampMixin):
         back_populates="organization",
         foreign_keys="Personnel.org_id"
     )
-    personnel_department: Mapped[list["Personnel"]] = relationship(
+
+
+class Department(Base, TimestampMixin):
+    __tablename__ = "departments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("departments.id"), nullable=True)
+    path: Mapped[str] = mapped_column(String(1000), nullable=False, default="/")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    parent: Mapped[Optional["Department"]] = relationship(
+        foreign_keys=[parent_id],
+        remote_side=[parent_id],
+    )
+    children: Mapped[list["Department"]] = relationship(
+        foreign_keys=[parent_id],
+        overlaps="parent",
+    )
+    personnel: Mapped[list["Personnel"]] = relationship(
         back_populates="department",
-        foreign_keys="Personnel.department_id"
+        foreign_keys="Personnel.department_id",
+    )
+    timings: Mapped[list["Timing"]] = relationship(
+        back_populates="department",
+        cascade="all, delete-orphan",
+    )
+
+
+class Weekday(str, enum.Enum):
+    MONDAY = "monday"
+    TUESDAY = "tuesday"
+    WEDNESDAY = "wednesday"
+    THURSDAY = "thursday"
+    FRIDAY = "friday"
+    SATURDAY = "saturday"
+    SUNDAY = "sunday"
+
+
+class Timing(Base, TimestampMixin):
+    __tablename__ = "timings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    department_id: Mapped[int] = mapped_column(
+        ForeignKey("departments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    start_day: Mapped[Weekday] = mapped_column(
+        Enum(Weekday, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+    )
+    end_day: Mapped[Weekday] = mapped_column(
+        Enum(Weekday, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+    )
+    start_time: Mapped[time] = mapped_column(Time, nullable=False)
+    end_time: Mapped[time] = mapped_column(Time, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    department: Mapped["Department"] = relationship(back_populates="timings")
+
+    __table_args__ = (
+        Index(
+            "uq_timings_one_active_per_department",
+            "department_id",
+            unique=True,
+            postgresql_where=(is_active.is_(True)),
+        ),
     )
 
 
